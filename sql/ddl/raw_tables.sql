@@ -1,3 +1,9 @@
 -- Raw GTFS tables can be added later if needed. Really not that important since we transformed the data.
 -- For phase 1 of project, we are focusing on clean and analytics tables in Snowflake.
 -- TODO: Later come back and add raw ddl just for source of truth purposes - SHANGWE
+
+USE ROLE TRAINING_ROLE;
+USE WAREHOUSE MARMOT_WH;
+USE DATABASE MARMOT_DB;
+CREATE SCHEMA IF NOT EXISTS CHICAGO_TRANSIT;
+USE SCHEMA CHICAGO_TRANSIT;
