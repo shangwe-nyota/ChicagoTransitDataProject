@@ -35,7 +35,7 @@ def main():
     activity_df.show(10)
 
     # Save result
-    activity_df.write.mode("overwrite").parquet(OUTPUT_DIR)
+    activity_df.write.mode("overwrite").parquet(OUTPUT_DIR)  # Writing to analytics parquet
 
     print(f"Saved analytics to {OUTPUT_DIR}")
 
