@@ -10,14 +10,14 @@ The pipeline ingests raw transit data, processes it using Spark, and loads struc
 
 ## What’s Implemented (Current State)
 
-I currently have a fully working **batch data pipeline**:
+Currently have a fully working **batch data pipeline**:
 
-### ✅ Data Ingestion
+###  Data Ingestion
 
 * GTFS static data downloaded via Python scripts
 * Stored locally under `data/raw/gtfs`
 
-### ✅ Data Processing (Spark)
+###  Data Processing (Spark)
 
 * Cleaned GTFS datasets:
 
@@ -28,7 +28,7 @@ I currently have a fully working **batch data pipeline**:
   * Shapes
 * Output stored as partitioned Parquet files
 
-### ✅ Data Warehouse (Snowflake)
+###  Data Warehouse (Snowflake)
 
 Three-layer modeling approach:
 
@@ -36,7 +36,7 @@ Three-layer modeling approach:
 * **CLEAN (processed datasets)**
 * **ANALYTICS (aggregated insights)**
 
-### 📊 Loaded Data Stats
+###  Loaded Data Stats
 
 * CLEAN_GTFS_STOPS → 11,184 rows
 
@@ -60,7 +60,7 @@ Three-layer modeling approach:
 
 ---
 
-## 🏗️ Pipeline Architecture (Batch)
+##  Pipeline Architecture (Batch)
 
 ```
 GTFS Static (CSV)        OSM Data (PBF/GeoJSON)
@@ -87,7 +87,7 @@ GTFS Static (CSV)        OSM Data (PBF/GeoJSON)
 
 ---
 
-## 🔮 Future Architecture (Streaming)
+##  Future Architecture (Streaming)
 
 Planned real-time pipeline:
 
@@ -145,7 +145,7 @@ Key folders:
 
 ---
 
-## ⚙️ How to Run (Local)
+## ⚙ How to Run (Local)
 
 ### 1. Setup environment
 
@@ -191,7 +191,7 @@ python -m jobs.load.load_to_snowflake
 
 ---
 
-## ✅ Data Validation
+##  Data Validation
 
 Example checks:
 
@@ -202,7 +202,7 @@ SELECT COUNT(*) FROM ANALYTICS_ROUTE_ACTIVITY;
 
 ---
 
-## 💡 Key Design Decisions
+##  Key Design Decisions
 
 * Used **Snowflake** for scalable analytics storage
 * Used **Spark** for distributed data processing
@@ -212,7 +212,7 @@ SELECT COUNT(*) FROM ANALYTICS_ROUTE_ACTIVITY;
 
 ---
 
-## 🎯 Next Steps
+##  Next Steps
 
 * Add Airflow orchestration (full DAG execution)
 * Implement data quality validation checks
