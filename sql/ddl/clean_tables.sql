@@ -45,3 +45,26 @@ CREATE OR REPLACE TABLE CLEAN_GTFS_SHAPES (
     shape_pt_lon FLOAT,
     shape_pt_sequence INTEGER
 );
+
+-- =========================
+-- CLEAN OSM TABLES
+-- =========================
+
+CREATE OR REPLACE TABLE CLEAN_OSM_ROADS (
+    osm_id STRING,
+    name STRING,
+    highway STRING,
+    start_lat FLOAT,
+    start_lon FLOAT,
+    end_lat FLOAT,
+    end_lon FLOAT,
+    length_m FLOAT
+);
+
+CREATE OR REPLACE TABLE CLEAN_OSM_POIS (
+    osm_id STRING,
+    name STRING,
+    amenity STRING,
+    lat FLOAT,
+    lon FLOAT
+);

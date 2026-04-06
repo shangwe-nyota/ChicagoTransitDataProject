@@ -51,3 +51,27 @@ CREATE OR REPLACE TABLE ANALYTICS_ROUTE_SHAPES (
     shape_pt_lat FLOAT,
     shape_pt_lon FLOAT
 );
+
+-- =========================
+-- GTFS + OSM ANALYTICS TABLES
+-- =========================
+
+CREATE OR REPLACE TABLE ANALYTICS_STOP_POI_ACCESS (
+    stop_id STRING,
+    stop_name STRING,
+    stop_lat FLOAT,
+    stop_lon FLOAT,
+    poi_count_within_400m INTEGER,
+    nearest_school_m FLOAT,
+    nearest_hospital_m FLOAT,
+    amenity_types STRING
+);
+
+CREATE OR REPLACE TABLE ANALYTICS_TRANSIT_ROAD_COVERAGE (
+    highway STRING,
+    total_road_segments INTEGER,
+    road_segments_near_transit INTEGER,
+    coverage_pct FLOAT,
+    total_length_km FLOAT,
+    covered_length_km FLOAT
+);

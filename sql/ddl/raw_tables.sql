@@ -106,3 +106,27 @@ CREATE TABLE IF NOT EXISTS RAW_GTFS_TRIPS (
     wheelchair_accessible INTEGER,
     schd_trip_id STRING
 );
+
+-- =========================
+-- RAW OSM TABLES
+-- Landing layer for OpenStreetMap data
+-- =========================
+
+CREATE TABLE IF NOT EXISTS RAW_OSM_ROADS (
+    osm_id STRING,
+    name STRING,
+    highway STRING,
+    start_lat FLOAT,
+    start_lon FLOAT,
+    end_lat FLOAT,
+    end_lon FLOAT,
+    length_m FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS RAW_OSM_POIS (
+    osm_id STRING,
+    name STRING,
+    amenity STRING,
+    lat FLOAT,
+    lon FLOAT
+);
