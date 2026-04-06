@@ -1,0 +1,7 @@
+stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,location_type,parent_station,wheelchair_boarding
+1,,State & Lake,,41.886,-87.628,0,,1
+2,,Clark & Lake,,41.886,-87.631,0,,1
+  3 ,,  Dearborn & Monroe  ,,41.881,-87.629,0,,1
+4,,Missing Lat,,,-87.628,0,,1
+1,,State & Lake Dupe,,41.886,-87.628,0,,1
+5,,Valid Stop,,41.890,-87.625,0,,1

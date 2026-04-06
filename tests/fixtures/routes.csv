@@ -1,0 +1,6 @@
+agency_id,route_id,route_short_name,route_long_name,route_type,route_url,route_color,route_text_color
+CTA,  R1 ,1,Indiana/Hyde Park,3,,,
+CTA,R2,2,Hyde Park Express,3,,,
+CTA,R1,1,Duplicate Route,3,,,
+CTA,,3,Missing ID,3,,,
+CTA,R3,3,South Michigan,3,,,

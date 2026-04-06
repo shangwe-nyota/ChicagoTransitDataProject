@@ -1,0 +1,5 @@
+route_id,service_id,trip_id,direction_id,block_id,shape_id,direction,wheelchair_accessible,schd_trip_id
+R1,S1,T1,0,,SH1,Southbound,1,SCH1
+R1,S1,T2,1,,SH1,Northbound,1,SCH2
+R2,S1,T3,0,,SH2,Eastbound,1,SCH3
+R1,S1,T1,0,,SH1,Duplicate,1,SCH1

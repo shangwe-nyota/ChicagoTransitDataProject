@@ -59,6 +59,8 @@ def main() -> None:
         run_sql_file(cur, DDL_DIR / "raw_tables.sql")
         run_sql_file(cur, DDL_DIR / "clean_tables.sql")
         run_sql_file(cur, DDL_DIR / "analytics_tables.sql")
+        if (DDL_DIR / "realtime_tables.sql").exists():
+            run_sql_file(cur, DDL_DIR / "realtime_tables.sql")
         print("\n✅ All Snowflake DDL files executed successfully.")
 
         # STEP 2: LOAD CLEAN DATA
@@ -69,6 +71,11 @@ def main() -> None:
         load_parquet_folder(conn, DATA_DIR / "clean/gtfs/stop_times", "CLEAN_GTFS_STOP_TIMES")
         load_parquet_folder(conn, DATA_DIR / "clean/gtfs/shapes", "CLEAN_GTFS_SHAPES")
 
+        # STEP 2b: LOAD CLEAN OSM DATA
+        print("\n Loading CLEAN OSM tables...")
+        load_parquet_folder(conn, DATA_DIR / "clean/osm/roads", "CLEAN_OSM_ROADS")
+        load_parquet_folder(conn, DATA_DIR / "clean/osm/pois", "CLEAN_OSM_POIS")
+
         # STEP 3: LOAD ANALYTICS DATA
         print("\n Loading ANALYTICS tables...")
         load_parquet_folder(conn, DATA_DIR / "analytics/stop_activity", "ANALYTICS_STOP_ACTIVITY")
@@ -76,6 +83,11 @@ def main() -> None:
         load_parquet_folder(conn, DATA_DIR / "analytics/route_activity", "ANALYTICS_ROUTE_ACTIVITY")
         load_parquet_folder(conn, DATA_DIR / "analytics/stop_activity_by_route", "ANALYTICS_STOP_ACTIVITY_BY_ROUTE")
         load_parquet_folder(conn, DATA_DIR / "analytics/route_shapes", "ANALYTICS_ROUTE_SHAPES")
+
+        # STEP 3b: LOAD GTFS + OSM ANALYTICS DATA
+        print("\n Loading GTFS + OSM ANALYTICS tables...")
+        load_parquet_folder(conn, DATA_DIR / "analytics/stop_poi_access", "ANALYTICS_STOP_POI_ACCESS")
+        load_parquet_folder(conn, DATA_DIR / "analytics/transit_road_coverage", "ANALYTICS_TRANSIT_ROAD_COVERAGE")
 
         print("\n ALL DATA LOADED SUCCESSFULLY")
 

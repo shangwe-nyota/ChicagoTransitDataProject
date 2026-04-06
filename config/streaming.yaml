@@ -1,0 +1,21 @@
+# GTFS Realtime Streaming Configuration
+
+cta_api:
+  # Register at: https://www.transitchicago.com/developers/traintrackerapply/
+  # Set CTA_API_KEY in your .env file
+  train_tracker_url: "https://lapi.transitchicago.com/api/1.0/ttarrivals.aspx"
+  bus_tracker_url: "https://www.ctabustracker.com/bustime/api/v2/getvehicles"
+  poll_interval_seconds: 30
+
+kafka:
+  bootstrap_servers: "localhost:9092"
+  topics:
+    vehicle_positions: "cta-vehicle-positions"
+    trip_updates: "cta-trip-updates"
+    delay_metrics: "cta-delay-metrics"
+
+flink:
+  jobmanager_url: "http://localhost:8081"
+  windows:
+    delay_metrics_seconds: 300    # 5-minute tumbling window
+    vehicle_counts_seconds: 300   # 5-minute tumbling window
