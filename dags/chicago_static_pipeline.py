@@ -3,15 +3,13 @@ from datetime import datetime
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
-
 with DAG(
-    dag_id="chicago_static_pipeline",
-    start_date=datetime(2026, 4, 1),
-    schedule=None,
-    catchup=False,
-    tags=["cta", "gtfs", "snowflake", "spark"],
+        dag_id="chicago_static_pipeline",
+        start_date=datetime(2026, 4, 1),
+        schedule="@daily",  # run the piepline everyday at midnight
+        catchup=False,
+        tags=["cta", "gtfs", "snowflake", "spark"],
 ) as dag:
-
     download_gtfs = BashOperator(
         task_id="download_gtfs",
         bash_command="python jobs/ingestion/download_gtfs.py",
