@@ -1,0 +1,16 @@
+pyspark
+pandas
+requests
+streamlit
+pydeck
+python-dotenv
+snowflake-connector-python
+cryptography
+osmnx
+geopandas
+apache-airflow
+pytest
+pytest-mock
+plotly
+confluent-kafka
+apache-flink
