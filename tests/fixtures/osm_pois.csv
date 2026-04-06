@@ -1,0 +1,8 @@
+osm_id,name,amenity,lat,lon
+P1,Lincoln Elementary,school,41.8862,-87.6282
+P2,Northwestern Hospital,hospital,41.8965,-87.6210
+P3,Corner Cafe,cafe,41.8858,-87.6285
+P4,ATM,atm,41.886,-87.628
+P5,City Library,library,41.8870,-87.6290
+P1,Duplicate School,school,41.8862,-87.6282
+P6,,restaurant,,-87.628

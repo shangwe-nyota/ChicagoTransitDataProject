@@ -1,0 +1,8 @@
+osm_id,name,highway,start_lat,start_lon,end_lat,end_lon,length_m
+100,State Street,primary,41.886,-87.628,41.884,-87.628,220.0
+101,Clark Street,secondary,41.886,-87.631,41.884,-87.631,220.0
+102,Lake Shore Drive,motorway,41.890,-87.620,41.888,-87.620,250.0
+103,,service,41.880,-87.625,41.879,-87.625,100.0
+104,Residential Rd,residential,41.870,-87.640,41.869,-87.640,120.0
+100,State Street Dupe,primary,41.886,-87.628,41.884,-87.628,220.0
+105,Missing Lat,secondary,,-87.628,41.884,-87.628,220.0
