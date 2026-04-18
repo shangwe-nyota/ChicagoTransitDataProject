@@ -1,8 +1,8 @@
-# Chicago Transit Data Pipeline
+#  Transit Data Pipeline
 
 ## Overview
 
-This project builds an end-to-end data pipeline for analyzing public transit data in Chicago using GTFS (General Transit Feed Specification) data.
+This project builds an end-to-end data pipeline for analyzing public transit data in using GTFS (General Transit Feed Specification) data.
 
 The pipeline ingests raw transit data, processes it using Spark, and loads structured datasets into Snowflake for analytics and querying. The goal is to create a scalable data engineering workflow that can later be extended to real-time streaming.
 
@@ -93,9 +93,7 @@ Planned real-time pipeline:
 
 ```
 GTFS-Realtime Feed
-        ↓
-   Python Poller
-        ↓
+        ↓        
       Kafka
         ↓
       Flink
@@ -109,7 +107,7 @@ GTFS-Realtime Feed
 
 ---
 
-## 📁 Project Structure
+##  Project Structure
 
 Key folders:
 
@@ -212,11 +210,8 @@ SELECT COUNT(*) FROM ANALYTICS_ROUTE_ACTIVITY;
 
 ---
 
-##  Next Steps
+## Current Next Step
 
-* Add Airflow orchestration (full DAG execution)
-* Implement data quality validation checks
-* Build dashboard for visualization
 * Integrate GTFS-realtime streaming pipeline
 
 ---
