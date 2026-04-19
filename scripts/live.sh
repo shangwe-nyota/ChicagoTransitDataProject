@@ -7,7 +7,7 @@ source "$(dirname "$0")/live_env.sh"
 RUNTIME_DIR="${PROJECT_ROOT}/.live"
 PID_DIR="${RUNTIME_DIR}/pids"
 LOG_DIR="${RUNTIME_DIR}/logs"
-CITY="${LIVE_CITY:-boston}"
+CITY="${2:-${LIVE_CITY:-boston}}"
 KAFKA_HOME="${KAFKA_HOME:-/opt/homebrew/opt/kafka}"
 KAFKA_CONFIG="${KAFKA_CONFIG:-/opt/homebrew/etc/kafka/server.properties}"
 
@@ -160,10 +160,26 @@ start_infra() {
 
 start_stream() {
   echo "Starting live stream processors for ${CITY}"
+
+  case "${CITY}" in
+    boston)
+      POLLER_NAME="mbta_to_kafka_${CITY}"
+      POLLER_SCRIPT="${PROJECT_ROOT}/scripts/run_mbta_to_kafka.sh"
+      ;;
+    chicago)
+      POLLER_NAME="cta_to_kafka_${CITY}"
+      POLLER_SCRIPT="${PROJECT_ROOT}/scripts/run_cta_to_kafka.sh"
+      ;;
+    *)
+      echo "No live poller defined for city: ${CITY}"
+      exit 1
+      ;;
+  esac
+
   start_background "flink_latest_${CITY}" bash "${PROJECT_ROOT}/scripts/run_flink_vehicle_latest_job.sh" "${CITY}"
   sleep 2
   start_background "kafka_to_redis_${CITY}" bash "${PROJECT_ROOT}/scripts/run_kafka_latest_to_redis.sh" "${CITY}"
-  start_background "mbta_to_kafka_${CITY}" bash "${PROJECT_ROOT}/scripts/run_mbta_to_kafka.sh" "${CITY}"
+  start_background "${POLLER_NAME}" bash "${POLLER_SCRIPT}" "${CITY}"
 }
 
 start_app() {
@@ -224,11 +240,10 @@ show_status() {
 stop_all() {
   echo "Stopping live runtime"
   cleanup_stale_pid_files
-  stop_pid_file "live_dashboard"
-  stop_pid_file "live_api"
-  stop_pid_file "mbta_to_kafka_${CITY}"
-  stop_pid_file "kafka_to_redis_${CITY}"
-  stop_pid_file "flink_latest_${CITY}"
+  for pid_file in "${PID_DIR}"/*.pid; do
+    [[ -e "${pid_file}" ]] || continue
+    stop_pid_file "$(basename "${pid_file}" .pid)"
+  done
 
   if is_port_listening 9092; then
     "${KAFKA_HOME}/bin/kafka-server-stop" >/dev/null 2>&1 || true
@@ -266,10 +281,10 @@ usage() {
 Usage: bash scripts/live.sh <command>
 
 Commands:
-  infra   Start Redis, start Kafka, and create city topics
-  stream  Start Flink latest job, Kafka-to-Redis updater, and MBTA-to-Kafka producer
+  infra   Start Redis, start Kafka, and create city topics for the target city
+  stream  Start Flink latest job, Kafka-to-Redis updater, and the city poller
   app     Start the FastAPI backend and React dashboard
-  all     Start infra, stream, and app
+  all     Start infra, stream, and app for the target city
   down    Stop the live runtime processes started by this script
   logs    List live logs or tail one log via: bash scripts/live.sh logs <name>
   status  Show current live runtime status
