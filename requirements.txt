@@ -1,0 +1,7 @@
+fastapi
+httpx
+kafka-python
+pydantic
+redis
+uvicorn
+websockets
