@@ -13,3 +13,6 @@ dashboard/web/dist/
 dashboard/web/.vite/
 .venv-live/
 tools/flink/connectors/*.jar
+# Redis
+dump.rdb
+appendonly.aof
