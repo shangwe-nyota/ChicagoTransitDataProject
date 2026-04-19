@@ -7,11 +7,33 @@ source "$(dirname "$0")/live_env.sh"
 RUNTIME_DIR="${PROJECT_ROOT}/.live"
 PID_DIR="${RUNTIME_DIR}/pids"
 LOG_DIR="${RUNTIME_DIR}/logs"
-CITY="${2:-${LIVE_CITY:-boston}}"
+TARGET="${2:-${LIVE_CITIES:-both}}"
 KAFKA_HOME="${KAFKA_HOME:-/opt/homebrew/opt/kafka}"
 KAFKA_CONFIG="${KAFKA_CONFIG:-/opt/homebrew/etc/kafka/server.properties}"
 
 mkdir -p "${PID_DIR}" "${LOG_DIR}"
+
+resolve_target_cities() {
+  local target
+  target="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+
+  case "${target}" in
+    ""|all|both)
+      printf '%s\n' boston chicago
+      ;;
+    boston|chicago)
+      printf '%s\n' "${target}"
+      ;;
+    *)
+      echo "Unsupported city target: ${1}" >&2
+      echo "Use one of: boston, chicago, both" >&2
+      exit 1
+      ;;
+  esac
+}
+
+TARGET_CITIES=( $(resolve_target_cities "${TARGET}") )
+TARGET_LABEL="$(IFS=,; echo "${TARGET_CITIES[*]}")"
 
 is_port_listening() {
   local port="$1"
@@ -137,7 +159,7 @@ stop_pid_file() {
 }
 
 start_infra() {
-  echo "Starting live infrastructure for ${CITY}"
+  echo "Starting live infrastructure for ${TARGET_LABEL}"
 
   if ! is_port_listening 6379; then
     redis-server --daemonize yes
@@ -155,31 +177,37 @@ start_infra() {
     echo "Kafka is already running on 9092"
   fi
 
-  bash "${PROJECT_ROOT}/scripts/create_live_topics.sh" "${CITY}"
+  local city
+  for city in "${TARGET_CITIES[@]}"; do
+    bash "${PROJECT_ROOT}/scripts/create_live_topics.sh" "${city}"
+  done
 }
 
 start_stream() {
-  echo "Starting live stream processors for ${CITY}"
+  echo "Starting live stream processors for ${TARGET_LABEL}"
 
-  case "${CITY}" in
-    boston)
-      POLLER_NAME="mbta_to_kafka_${CITY}"
-      POLLER_SCRIPT="${PROJECT_ROOT}/scripts/run_mbta_to_kafka.sh"
-      ;;
-    chicago)
-      POLLER_NAME="cta_to_kafka_${CITY}"
-      POLLER_SCRIPT="${PROJECT_ROOT}/scripts/run_cta_to_kafka.sh"
-      ;;
-    *)
-      echo "No live poller defined for city: ${CITY}"
-      exit 1
-      ;;
-  esac
+  local city poller_name poller_script
+  for city in "${TARGET_CITIES[@]}"; do
+    case "${city}" in
+      boston)
+        poller_name="mbta_to_kafka_${city}"
+        poller_script="${PROJECT_ROOT}/scripts/run_mbta_to_kafka.sh"
+        ;;
+      chicago)
+        poller_name="cta_to_kafka_${city}"
+        poller_script="${PROJECT_ROOT}/scripts/run_cta_to_kafka.sh"
+        ;;
+      *)
+        echo "No live poller defined for city: ${city}"
+        exit 1
+        ;;
+    esac
 
-  start_background "flink_latest_${CITY}" bash "${PROJECT_ROOT}/scripts/run_flink_vehicle_latest_job.sh" "${CITY}"
-  sleep 2
-  start_background "kafka_to_redis_${CITY}" bash "${PROJECT_ROOT}/scripts/run_kafka_latest_to_redis.sh" "${CITY}"
-  start_background "${POLLER_NAME}" bash "${POLLER_SCRIPT}" "${CITY}"
+    start_background "flink_latest_${city}" bash "${PROJECT_ROOT}/scripts/run_flink_vehicle_latest_job.sh" "${city}"
+    sleep 2
+    start_background "kafka_to_redis_${city}" bash "${PROJECT_ROOT}/scripts/run_kafka_latest_to_redis.sh" "${city}"
+    start_background "${poller_name}" bash "${poller_script}" "${city}"
+  done
 }
 
 start_app() {
@@ -190,7 +218,10 @@ start_app() {
   echo "Live links"
   echo "  UI:      http://127.0.0.1:5173"
   echo "  API:     http://127.0.0.1:8000"
-  echo "  Health:  http://127.0.0.1:8000/api/live/${CITY}/health"
+  local city
+  for city in "${TARGET_CITIES[@]}"; do
+    echo "  Health (${city}): http://127.0.0.1:8000/api/live/${city}/health"
+  done
   echo
   echo "Useful commands"
   echo "  bash scripts/live.sh status"
@@ -254,6 +285,13 @@ stop_all() {
     redis-cli shutdown >/dev/null 2>&1 || true
     echo "Requested Redis shutdown"
   fi
+
+  pkill -f "jobs.realtime.mbta_poll_to_kafka" >/dev/null 2>&1 || true
+  pkill -f "jobs.realtime.cta_poll_to_kafka" >/dev/null 2>&1 || true
+  pkill -f "jobs.realtime.mbta_poll_to_redis" >/dev/null 2>&1 || true
+  pkill -f "jobs.realtime.cta_poll_to_redis" >/dev/null 2>&1 || true
+  pkill -f "jobs.realtime.kafka_latest_to_redis" >/dev/null 2>&1 || true
+  pkill -f "jobs/realtime/flink_vehicle_latest_job.py" >/dev/null 2>&1 || true
 
   kill_listeners_on_port 5173 "dashboard"
   kill_listeners_on_port 8000 "API"

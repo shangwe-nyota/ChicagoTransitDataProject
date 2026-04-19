@@ -33,6 +33,24 @@ function statusColor(status) {
   }
 }
 
+function displayStatus(vehicle) {
+  if (vehicle.current_status === "IN_TRANSIT_TO") {
+    return "In transit";
+  }
+  if (vehicle.current_status === "STOPPED_AT") {
+    return vehicle.city === "chicago" && vehicle.route_type === 3 ? "Delayed" : "Stopped";
+  }
+  if (vehicle.current_status === "INCOMING_AT") {
+    return "Approaching stop";
+  }
+
+  if (vehicle.city === "chicago" && vehicle.route_type === 3) {
+    return "Reporting live";
+  }
+
+  return "Unknown";
+}
+
 function vehicleColor(vehicle) {
   // Chicago L-trains: use authentic CTA line brand colors
   if (vehicle.city === "chicago" && vehicle.route_type === 1) {
@@ -308,7 +326,7 @@ function App() {
                         <div class="tooltip-title">${object.label || object.vehicle_id}</div>
                         <div>Route: ${object.route_label || object.route_id || "Unknown"}</div>
                         <div>Mode: ${routeTypeLabel(object.route_type)}</div>
-                        <div>Status: ${object.current_status || "Unknown"}</div>
+                        <div>Status: ${displayStatus(object)}</div>
                         <div>Updated: ${object.updated_at ? new Date(object.updated_at).toLocaleTimeString() : "Unknown"}</div>
                       `,
                     }
@@ -344,7 +362,7 @@ function App() {
                     <tr key={vehicle.vehicle_id}>
                       <td>{vehicle.label || vehicle.vehicle_id}</td>
                       <td>{vehicle.route_label || vehicle.route_id || "Unknown"}</td>
-                      <td>{vehicle.current_status || "Unknown"}</td>
+                      <td>{displayStatus(vehicle)}</td>
                       <td>{vehicle.updated_at ? new Date(vehicle.updated_at).toLocaleTimeString() : "Unknown"}</td>
                     </tr>
                   ))}
