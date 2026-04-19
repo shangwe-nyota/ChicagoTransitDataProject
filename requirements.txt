@@ -1,7 +1,16 @@
 fastapi
 httpx
 kafka-python
+osmnx
+pandas
+pyarrow
 pydantic
+pyspark
 redis
+requests
+snowflake-connector-python
+streamlit
 uvicorn
 websockets
+python-dotenv
+cryptography
