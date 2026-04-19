@@ -112,39 +112,24 @@ Useful URLs:
 - `http://127.0.0.1:8000/api/live/boston/health`
 - `http://127.0.0.1:8000/api/live/chicago/health`
 
-## 6. Near-Term Planned Batch Flow Expansion
+## 6. Shared City-Aware Batch Flow
 
-The next major batch work is expected to be:
+The repo now has a newer city-aware batch path alongside the legacy Chicago-only jobs.
 
-1. Boston GTFS batch support
-2. Boston OSM integration
-3. Chicago OSM integration completion
-4. new spatial analytics that combine GTFS + OSM
-5. migration of older batch visuals into the newer dashboard stack
+Current implemented flow:
 
-That batch + OSM work is the highest-value next engineering area because it will create richer dashboard queries and a stronger presentation story.
+1. `jobs/pipeline/run_city_batch_pipeline.py --city {city}`
+2. `jobs/ingestion/download_gtfs.py --city {city}`
+3. `jobs/ingestion/download_osm.py --city {city}`
+4. `jobs/spark/clean_gtfs_city.py --city {city}`
+5. `jobs/spark/clean_osm_city.py --city {city}`
+6. `jobs/spark/build_city_batch_analytics.py --city {city}`
+7. optional `python -m jobs.load.load_to_snowflake`
 
-## 7. New City-Aware Batch Foundation
+Current supported cities:
 
-The repo now also has a newer city-aware batch path alongside the legacy Chicago-only jobs.
-
-Key files:
-
-- `jobs/ingestion/download_gtfs.py`
-  - preserves the legacy Chicago raw path by default
-  - also supports `--city chicago` and `--city boston` for city-scoped GTFS downloads
-
-- `jobs/ingestion/download_osm.py`
-  - downloads roads and POIs into `data/raw/osm/{city}/`
-
-- `jobs/spark/clean_gtfs_city.py`
-  - writes cleaned GTFS parquet to `data/processed/{city}/clean/gtfs/...`
-
-- `jobs/spark/clean_osm_city.py`
-  - writes cleaned OSM parquet to `data/processed/{city}/clean/osm/...`
-
-- `jobs/spark/build_city_batch_analytics.py`
-  - writes city-scoped analytics parquet to `data/processed/{city}/analytics/...`
+- `chicago`
+- `boston`
 
 Current city-aware GTFS + OSM analytics outputs include:
 
@@ -153,4 +138,92 @@ Current city-aware GTFS + OSM analytics outputs include:
 - `route_poi_access`
 - `transit_road_coverage`
 
-This is the intended path for Boston batch work and for finishing Chicago GTFS + OSM in a reusable way.
+This is now the preferred path for:
+
+- Boston batch GTFS + OSM
+- Chicago GTFS + OSM continuation
+- future Snowflake-backed batch API work
+
+Manual trigger command:
+
+```bash
+bash scripts/run_batch_pipeline.sh all --load-snowflake
+```
+
+Single-city examples:
+
+```bash
+bash scripts/run_batch_pipeline.sh chicago
+bash scripts/run_batch_pipeline.sh boston --load-snowflake
+```
+
+## 7. Batch Run Metadata And Checkpointing
+
+The city-aware batch path now records run metadata and supports practical resume behavior.
+
+Key files:
+
+- `src/common/run_metadata.py`
+  - shared manifest/checkpoint helper
+- `src/common/paths.py`
+  - staging/run-metadata/checkpoint paths
+- `jobs/pipeline/run_city_batch_pipeline.py`
+  - orchestrates a full city batch run with a shared `run_id`
+
+Run metadata is written under:
+
+- `data/staging/run_metadata/{run_id}/{city}/`
+
+Per-city latest stage checkpoints are written under:
+
+- `data/staging/checkpoints/{city}/`
+
+Important behavior:
+
+- stages write JSON manifests with:
+  - status
+  - command
+  - input/output path stats
+  - row counts and load metrics where available
+- rerunning the same city batch pipeline with the same `run_id` skips completed stages
+- this was verified on a real Boston rerun after an earlier failed stage
+
+Example:
+
+```bash
+python jobs/pipeline/run_city_batch_pipeline.py --city boston --run-id boston-20260419T215417Z-863baa76
+```
+
+On a completed run, the pipeline now skips:
+
+- GTFS download
+- OSM download
+- GTFS clean
+- OSM clean
+- analytics build
+
+and exits successfully without recomputing them.
+
+## 8. Airflow Batch Orchestration
+
+The old Chicago-only DAG has been replaced by:
+
+- `dags/multi_city_batch_pipeline.py`
+
+Current Airflow flow:
+
+1. run Chicago city batch pipeline
+2. run Boston city batch pipeline
+3. load shared multi-city `BATCH_*` outputs to Snowflake
+
+Schedule:
+
+- `@daily`
+
+Important detail:
+
+- Chicago and Boston run as separate city batch tasks
+- Snowflake load runs only after both city tasks succeed
+- the DAG uses a shared Airflow run id shape:
+  - `airflow-{{ ts_nodash }}`
+  - that means reruns for the same Airflow execution can reuse the batch manifest/checkpoint system cleanly

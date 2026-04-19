@@ -30,6 +30,7 @@ from src.common.constants import (
     TRANSIT_ROAD_COVERAGE_DISTANCE_M,
 )
 from src.common.paths import analytics_dir, clean_gtfs_dir, clean_osm_dir
+from src.common.run_metadata import StageTracker, generate_run_id
 from src.osm.transformers import haversine_distance
 
 
@@ -131,7 +132,7 @@ def route_shapes(trips_df: DataFrame, routes_df: DataFrame, shapes_df: DataFrame
     )
 
 
-def stop_poi_access(stops_df: DataFrame, pois_df: DataFrame, city: str) -> DataFrame:
+def stop_poi_access(stops_df: DataFrame, pois_df: DataFrame) -> DataFrame:
     lat_threshold = 0.004
     lon_threshold = 0.005
 
@@ -300,51 +301,104 @@ def write_dataset(df: DataFrame, city: str, dataset_name: str) -> None:
 def main() -> None:
     args = parse_args()
     city = args.city.lower()
+    output_dirs = [
+        analytics_dir(city, "stop_activity"),
+        analytics_dir(city, "stop_activity_enriched"),
+        analytics_dir(city, "route_activity"),
+        analytics_dir(city, "stop_activity_by_route"),
+        analytics_dir(city, "route_shapes"),
+        analytics_dir(city, "stop_poi_access"),
+        analytics_dir(city, "busiest_stops_with_poi_context"),
+        analytics_dir(city, "route_poi_access"),
+        analytics_dir(city, "transit_road_coverage"),
+    ]
+    input_dirs = [
+        clean_gtfs_dir(city, "stops"),
+        clean_gtfs_dir(city, "routes"),
+        clean_gtfs_dir(city, "trips"),
+        clean_gtfs_dir(city, "stop_times"),
+        clean_gtfs_dir(city, "shapes"),
+        clean_osm_dir(city, "roads"),
+        clean_osm_dir(city, "pois"),
+    ]
+    tracker = StageTracker(
+        stage="build_city_batch_analytics",
+        city=city,
+        run_id=args.run_id or generate_run_id(city),
+        force=args.force,
+    )
+    command = f"python jobs/spark/build_city_batch_analytics.py --city {city}"
 
+    if tracker.should_skip(output_dirs):
+        print(f"Skipping build_city_batch_analytics for {city}; checkpoint exists for run_id={tracker.run_id}")
+        tracker.mark_skipped(command=command, input_paths=input_dirs, output_paths=output_dirs)
+        return
+
+    tracker.mark_running(command=command, input_paths=input_dirs, output_paths=output_dirs)
     spark = SparkSession.builder.appName(f"Build City Batch Analytics - {city}").getOrCreate()
 
-    stops_df = spark.read.parquet(str(clean_gtfs_dir(city, "stops")))
-    routes_df = spark.read.parquet(str(clean_gtfs_dir(city, "routes")))
-    trips_df = spark.read.parquet(str(clean_gtfs_dir(city, "trips")))
-    stop_times_df = spark.read.parquet(str(clean_gtfs_dir(city, "stop_times")))
-    shapes_df = spark.read.parquet(str(clean_gtfs_dir(city, "shapes")))
-    roads_df = spark.read.parquet(str(clean_osm_dir(city, "roads")))
-    pois_df = spark.read.parquet(str(clean_osm_dir(city, "pois")))
+    try:
+        stops_df = spark.read.parquet(str(clean_gtfs_dir(city, "stops")))
+        routes_df = spark.read.parquet(str(clean_gtfs_dir(city, "routes")))
+        trips_df = spark.read.parquet(str(clean_gtfs_dir(city, "trips")))
+        stop_times_df = spark.read.parquet(str(clean_gtfs_dir(city, "stop_times")))
+        shapes_df = spark.read.parquet(str(clean_gtfs_dir(city, "shapes")))
+        roads_df = spark.read.parquet(str(clean_osm_dir(city, "roads")))
+        pois_df = spark.read.parquet(str(clean_osm_dir(city, "pois")))
 
-    stop_activity_df = stop_activity(stop_times_df)
-    stop_activity_enriched_df = stop_activity_enriched(stops_df, stop_activity_df)
-    route_activity_df = route_activity(stop_times_df, trips_df, routes_df)
-    stop_activity_by_route_df = stop_activity_by_route(stop_times_df, trips_df, routes_df, stops_df)
-    route_shapes_df = route_shapes(trips_df, routes_df, shapes_df)
-    stop_poi_access_df = stop_poi_access(stops_df, pois_df, city)
-    busiest_stops_with_poi_context_df = busiest_stops_with_poi_context(
-        stop_activity_enriched_df,
-        stop_poi_access_df,
-    )
-    route_poi_access_df = route_poi_access(stop_activity_by_route_df, stop_poi_access_df)
-    transit_road_coverage_df = transit_road_coverage(roads_df, stops_df)
+        stop_activity_df = stop_activity(stop_times_df)
+        stop_activity_enriched_df = stop_activity_enriched(stops_df, stop_activity_df)
+        route_activity_df = route_activity(stop_times_df, trips_df, routes_df)
+        stop_activity_by_route_df = stop_activity_by_route(stop_times_df, trips_df, routes_df, stops_df)
+        route_shapes_df = route_shapes(trips_df, routes_df, shapes_df)
+        stop_poi_access_df = stop_poi_access(stops_df, pois_df)
+        busiest_stops_with_poi_context_df = busiest_stops_with_poi_context(
+            stop_activity_enriched_df,
+            stop_poi_access_df,
+        )
+        route_poi_access_df = route_poi_access(stop_activity_by_route_df, stop_poi_access_df)
+        transit_road_coverage_df = transit_road_coverage(roads_df, stops_df)
 
-    outputs = {
-        "stop_activity": stop_activity_df,
-        "stop_activity_enriched": stop_activity_enriched_df,
-        "route_activity": route_activity_df,
-        "stop_activity_by_route": stop_activity_by_route_df,
-        "route_shapes": route_shapes_df,
-        "stop_poi_access": stop_poi_access_df,
-        "busiest_stops_with_poi_context": busiest_stops_with_poi_context_df,
-        "route_poi_access": route_poi_access_df,
-        "transit_road_coverage": transit_road_coverage_df,
-    }
+        outputs = {
+            "stop_activity": stop_activity_df,
+            "stop_activity_enriched": stop_activity_enriched_df,
+            "route_activity": route_activity_df,
+            "stop_activity_by_route": stop_activity_by_route_df,
+            "route_shapes": route_shapes_df,
+            "stop_poi_access": stop_poi_access_df,
+            "busiest_stops_with_poi_context": busiest_stops_with_poi_context_df,
+            "route_poi_access": route_poi_access_df,
+            "transit_road_coverage": transit_road_coverage_df,
+        }
 
-    for dataset_name, df in outputs.items():
-        write_dataset(df, city, dataset_name)
+        row_counts: dict[str, int] = {}
+        for dataset_name, df in outputs.items():
+            row_counts[dataset_name] = df.count()
+            write_dataset(df, city, dataset_name)
 
-    spark.stop()
+        tracker.mark_success(
+            command=command,
+            input_paths=input_dirs,
+            output_paths=output_dirs,
+            metrics={"row_counts": row_counts},
+        )
+    except Exception as error:
+        tracker.mark_failed(
+            command=command,
+            error=error,
+            input_paths=input_dirs,
+            output_paths=output_dirs,
+        )
+        raise
+    finally:
+        spark.stop()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build city-aware GTFS + OSM analytics.")
     parser.add_argument("--city", required=True, choices=["chicago", "boston"])
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
 
