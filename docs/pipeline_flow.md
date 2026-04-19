@@ -123,3 +123,34 @@ The next major batch work is expected to be:
 5. migration of older batch visuals into the newer dashboard stack
 
 That batch + OSM work is the highest-value next engineering area because it will create richer dashboard queries and a stronger presentation story.
+
+## 7. New City-Aware Batch Foundation
+
+The repo now also has a newer city-aware batch path alongside the legacy Chicago-only jobs.
+
+Key files:
+
+- `jobs/ingestion/download_gtfs.py`
+  - preserves the legacy Chicago raw path by default
+  - also supports `--city chicago` and `--city boston` for city-scoped GTFS downloads
+
+- `jobs/ingestion/download_osm.py`
+  - downloads roads and POIs into `data/raw/osm/{city}/`
+
+- `jobs/spark/clean_gtfs_city.py`
+  - writes cleaned GTFS parquet to `data/processed/{city}/clean/gtfs/...`
+
+- `jobs/spark/clean_osm_city.py`
+  - writes cleaned OSM parquet to `data/processed/{city}/clean/osm/...`
+
+- `jobs/spark/build_city_batch_analytics.py`
+  - writes city-scoped analytics parquet to `data/processed/{city}/analytics/...`
+
+Current city-aware GTFS + OSM analytics outputs include:
+
+- `stop_poi_access`
+- `busiest_stops_with_poi_context`
+- `route_poi_access`
+- `transit_road_coverage`
+
+This is the intended path for Boston batch work and for finishing Chicago GTFS + OSM in a reusable way.

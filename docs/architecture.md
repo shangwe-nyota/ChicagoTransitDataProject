@@ -120,6 +120,29 @@ City-specific live source adapters:
 - Chicago:
   - `src/live/cta.py`
 
+### Emerging City-Aware Batch Path
+
+There is now a newer batch foundation for multi-city GTFS + OSM work.
+
+That path is centered around:
+
+- `src/common/config.py`
+- `src/common/constants.py`
+- `src/common/paths.py`
+- `jobs/ingestion/download_osm.py`
+- `jobs/spark/clean_gtfs_city.py`
+- `jobs/spark/clean_osm_city.py`
+- `jobs/spark/build_city_batch_analytics.py`
+
+The new path writes city-scoped parquet outputs under:
+
+- `data/raw/gtfs/{city}`
+- `data/raw/osm/{city}`
+- `data/processed/{city}/clean/...`
+- `data/processed/{city}/analytics/...`
+
+This lets Boston and Chicago share one batch pattern without requiring a major repo reorganization.
+
 ## Design Intent
 
 The repo is intentionally not being heavily reorganized right now.

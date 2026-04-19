@@ -9,6 +9,7 @@ from snowflake.connector.pandas_tools import write_pandas
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DDL_DIR = PROJECT_ROOT / "sql" / "ddl"
 DATA_DIR = PROJECT_ROOT / "data" / "processed"
+BATCH_CITY_DIRS = [path for path in DATA_DIR.iterdir() if path.is_dir() and path.name in {"chicago", "boston"}]
 
 
 # ------------------------
@@ -34,6 +35,36 @@ def load_parquet_folder(conn, folder_path: Path, table_name: str) -> None:
     df = pd.read_parquet(folder_path)
     df.columns = [col.upper() for col in df.columns] #snowflake table names are uppercase in ddl
 
+    success, nchunks, nrows, _ = write_pandas(
+        conn,
+        df,
+        table_name,
+        auto_create_table=False
+    )
+
+    if success:
+        print(f"✅ Loaded {nrows} rows into {table_name}")
+    else:
+        print(f"❌ Failed to load {table_name}")
+
+
+def load_city_partitioned_table(conn, dataset_path_suffix: str, table_name: str) -> None:
+    frames: list[pd.DataFrame] = []
+
+    for city_dir in BATCH_CITY_DIRS:
+        folder_path = city_dir / dataset_path_suffix
+        if not folder_path.exists():
+            continue
+
+        print(f"\n Loading {table_name} partition from {folder_path}")
+        frames.append(pd.read_parquet(folder_path))
+
+    if not frames:
+        print(f"\n Skipping {table_name}; no city-partitioned parquet folders found for {dataset_path_suffix}")
+        return
+
+    df = pd.concat(frames, ignore_index=True)
+    df.columns = [col.upper() for col in df.columns]
     success, nchunks, nrows, _ = write_pandas(
         conn,
         df,
@@ -76,6 +107,25 @@ def main() -> None:
         load_parquet_folder(conn, DATA_DIR / "analytics/route_activity", "ANALYTICS_ROUTE_ACTIVITY")
         load_parquet_folder(conn, DATA_DIR / "analytics/stop_activity_by_route", "ANALYTICS_STOP_ACTIVITY_BY_ROUTE")
         load_parquet_folder(conn, DATA_DIR / "analytics/route_shapes", "ANALYTICS_ROUTE_SHAPES")
+
+        # STEP 4: LOAD MULTI-CITY BATCH TABLES
+        print("\n Loading multi-city BATCH tables...")
+        load_city_partitioned_table(conn, Path("clean/gtfs/stops"), "BATCH_GTFS_STOPS")
+        load_city_partitioned_table(conn, Path("clean/gtfs/routes"), "BATCH_GTFS_ROUTES")
+        load_city_partitioned_table(conn, Path("clean/gtfs/trips"), "BATCH_GTFS_TRIPS")
+        load_city_partitioned_table(conn, Path("clean/gtfs/stop_times"), "BATCH_GTFS_STOP_TIMES")
+        load_city_partitioned_table(conn, Path("clean/gtfs/shapes"), "BATCH_GTFS_SHAPES")
+        load_city_partitioned_table(conn, Path("clean/osm/roads"), "BATCH_OSM_ROADS")
+        load_city_partitioned_table(conn, Path("clean/osm/pois"), "BATCH_OSM_POIS")
+        load_city_partitioned_table(conn, Path("analytics/stop_activity"), "BATCH_STOP_ACTIVITY")
+        load_city_partitioned_table(conn, Path("analytics/stop_activity_enriched"), "BATCH_STOP_ACTIVITY_ENRICHED")
+        load_city_partitioned_table(conn, Path("analytics/route_activity"), "BATCH_ROUTE_ACTIVITY")
+        load_city_partitioned_table(conn, Path("analytics/stop_activity_by_route"), "BATCH_STOP_ACTIVITY_BY_ROUTE")
+        load_city_partitioned_table(conn, Path("analytics/route_shapes"), "BATCH_ROUTE_SHAPES")
+        load_city_partitioned_table(conn, Path("analytics/stop_poi_access"), "BATCH_STOP_POI_ACCESS")
+        load_city_partitioned_table(conn, Path("analytics/busiest_stops_with_poi_context"), "BATCH_BUSIEST_STOPS_WITH_POI_CONTEXT")
+        load_city_partitioned_table(conn, Path("analytics/route_poi_access"), "BATCH_ROUTE_POI_ACCESS")
+        load_city_partitioned_table(conn, Path("analytics/transit_road_coverage"), "BATCH_TRANSIT_ROAD_COVERAGE")
 
         print("\n ALL DATA LOADED SUCCESSFULLY")
 
