@@ -19,6 +19,25 @@ def city_processed_dir(city: str) -> Path:
     return DATA_DIR / "processed" / city
 
 
+def staging_dir() -> Path:
+    return DATA_DIR / "staging"
+
+
+def run_metadata_dir() -> Path:
+    return staging_dir() / "run_metadata"
+
+
+def run_dir(run_id: str, city: str | None = None) -> Path:
+    base = run_metadata_dir() / run_id
+    if city is None:
+        return base
+    return base / city
+
+
+def checkpoint_dir(city: str) -> Path:
+    return staging_dir() / "checkpoints" / city
+
+
 def clean_gtfs_dir(city: str, dataset: str) -> Path:
     return city_processed_dir(city) / "clean" / "gtfs" / dataset
 

@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql.functions import col, lit, trim
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +12,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.common.paths import clean_gtfs_dir, raw_gtfs_dir
+from src.common.run_metadata import StageTracker, generate_run_id
+
+
+def optional_string_column(df: DataFrame, column_name: str) -> Column:
+    if column_name in df.columns:
+        return trim(col(column_name).cast("string")).alias(column_name)
+    return lit(None).cast("string").alias(column_name)
 
 
 def clean_stops(spark: SparkSession, raw_dir: Path, city: str) -> DataFrame:
@@ -56,9 +63,9 @@ def clean_trips(spark: SparkSession, raw_dir: Path, city: str) -> DataFrame:
             trim(col("trip_id").cast("string")).alias("trip_id"),
             col("direction_id").cast("int").alias("direction_id"),
             trim(col("shape_id").cast("string")).alias("shape_id"),
-            trim(col("direction")).alias("direction"),
+            optional_string_column(trips_df, "direction"),
             col("wheelchair_accessible").cast("int").alias("wheelchair_accessible"),
-            trim(col("schd_trip_id")).alias("schd_trip_id"),
+            optional_string_column(trips_df, "schd_trip_id"),
         )
         .dropna(subset=["route_id", "trip_id"])
         .dropDuplicates(["city", "trip_id"])
@@ -98,28 +105,68 @@ def main() -> None:
     args = parse_args()
     city = args.city.lower()
     raw_dir = raw_gtfs_dir(city)
+    output_dirs = [
+        clean_gtfs_dir(city, "stops"),
+        clean_gtfs_dir(city, "routes"),
+        clean_gtfs_dir(city, "trips"),
+        clean_gtfs_dir(city, "stop_times"),
+        clean_gtfs_dir(city, "shapes"),
+    ]
+    tracker = StageTracker(
+        stage="clean_gtfs_city",
+        city=city,
+        run_id=args.run_id or generate_run_id(city),
+        force=args.force,
+    )
+    command = f"python jobs/spark/clean_gtfs_city.py --city {city}"
 
+    if tracker.should_skip(output_dirs):
+        print(f"Skipping clean_gtfs_city for {city}; checkpoint exists for run_id={tracker.run_id}")
+        tracker.mark_skipped(command=command, input_paths=[raw_dir], output_paths=output_dirs)
+        return
+
+    tracker.mark_running(command=command, input_paths=[raw_dir], output_paths=output_dirs)
     spark = SparkSession.builder.appName(f"Clean GTFS City - {city}").getOrCreate()
 
-    datasets = {
-        "stops": clean_stops(spark, raw_dir, city),
-        "routes": clean_routes(spark, raw_dir, city),
-        "trips": clean_trips(spark, raw_dir, city),
-        "stop_times": clean_stop_times(spark, raw_dir, city),
-        "shapes": clean_shapes(spark, raw_dir, city),
-    }
+    try:
+        datasets = {
+            "stops": clean_stops(spark, raw_dir, city),
+            "routes": clean_routes(spark, raw_dir, city),
+            "trips": clean_trips(spark, raw_dir, city),
+            "stop_times": clean_stop_times(spark, raw_dir, city),
+            "shapes": clean_shapes(spark, raw_dir, city),
+        }
 
-    for dataset_name, df in datasets.items():
-        output_dir = clean_gtfs_dir(city, dataset_name)
-        print(f"Writing {dataset_name} for {city} to {output_dir}")
-        df.write.mode("overwrite").parquet(str(output_dir))
+        row_counts: dict[str, int] = {}
+        for dataset_name, df in datasets.items():
+            output_dir = clean_gtfs_dir(city, dataset_name)
+            row_counts[dataset_name] = df.count()
+            print(f"Writing {dataset_name} for {city} to {output_dir}")
+            df.write.mode("overwrite").parquet(str(output_dir))
 
-    spark.stop()
+        tracker.mark_success(
+            command=command,
+            input_paths=[raw_dir],
+            output_paths=output_dirs,
+            metrics={"row_counts": row_counts},
+        )
+    except Exception as error:
+        tracker.mark_failed(
+            command=command,
+            error=error,
+            input_paths=[raw_dir],
+            output_paths=output_dirs,
+        )
+        raise
+    finally:
+        spark.stop()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Clean GTFS batch data for a city.")
     parser.add_argument("--city", required=True, choices=["chicago", "boston"])
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
 

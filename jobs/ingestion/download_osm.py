@@ -1,5 +1,5 @@
 from __future__ import annotations
-import osmnx as ox
+
 import argparse
 import sys
 from pathlib import Path
@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.common.config import get_batch_city_config
 from src.common.constants import OSM_POI_TAGS
 from src.common.paths import raw_osm_dir
+from src.common.run_metadata import StageTracker, generate_run_id
 
 
 def _normalize_scalar(value):
@@ -20,6 +21,7 @@ def _normalize_scalar(value):
 
 
 def download_roads(place_name: str, output_path: Path) -> None:
+    import osmnx as ox
 
     print(f"Downloading OSM road network for {place_name}...")
     graph = ox.graph_from_place(place_name, network_type="drive")
@@ -101,22 +103,63 @@ def download_pois(place_name: str, output_path: Path) -> None:
     print(f"POIs saved: {len(records)} rows -> {output_path}")
 
 
-def download_osm(city: str) -> None:
+def download_osm(city: str, run_id: str | None = None, force: bool = False) -> None:
     city_config = get_batch_city_config(city)
     output_dir = raw_osm_dir(city)
     output_dir.mkdir(parents=True, exist_ok=True)
+    roads_path = output_dir / "roads.csv"
+    pois_path = output_dir / "pois.csv"
+    tracker = StageTracker(
+        stage="download_osm",
+        city=city,
+        run_id=run_id or generate_run_id(city),
+        force=force,
+    )
+    command = f"python jobs/ingestion/download_osm.py --city {city}"
+    expected_outputs = [roads_path, pois_path]
 
-    download_roads(city_config.osm_place_name, output_dir / "roads.csv")
-    download_pois(city_config.osm_place_name, output_dir / "pois.csv")
-    print(f"OSM download complete for {city_config.display_name}.")
+    if tracker.should_skip(expected_outputs):
+        print(f"Skipping download_osm for {city}; checkpoint exists for run_id={tracker.run_id}")
+        tracker.mark_skipped(command=command, output_paths=expected_outputs)
+        return
+
+    tracker.mark_running(
+        command=command,
+        output_paths=expected_outputs,
+        metrics={"osm_place_name": city_config.osm_place_name},
+    )
+
+    try:
+        download_roads(city_config.osm_place_name, roads_path)
+        download_pois(city_config.osm_place_name, pois_path)
+        tracker.mark_success(
+            command=command,
+            output_paths=expected_outputs,
+            metrics={
+                "osm_place_name": city_config.osm_place_name,
+                "roads_csv_bytes": roads_path.stat().st_size if roads_path.exists() else 0,
+                "pois_csv_bytes": pois_path.stat().st_size if pois_path.exists() else 0,
+            },
+        )
+        print(f"OSM download complete for {city_config.display_name}.")
+    except Exception as error:
+        tracker.mark_failed(
+            command=command,
+            error=error,
+            output_paths=expected_outputs,
+            metrics={"osm_place_name": city_config.osm_place_name},
+        )
+        raise
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download OSM roads and POIs for a city.")
     parser.add_argument("--city", default="chicago", choices=["chicago", "boston"])
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    download_osm(args.city)
+    download_osm(args.city, run_id=args.run_id, force=args.force)

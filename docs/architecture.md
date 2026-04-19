@@ -39,6 +39,8 @@ The intended platform direction is:
 - Chicago live where practical
 - one shared dashboard experience
 
+That direction is no longer only aspirational. The city-aware batch path now runs end to end for both Chicago and Boston, and both cities have been loaded into the new `BATCH_*` Snowflake tables.
+
 ## Top-Level Directory Roles
 
 - `config/`
@@ -46,8 +48,7 @@ The intended platform direction is:
 
 - `dags/`
   - Airflow orchestration for batch work
-  - important caveat:
-    - the DAG reflects the earlier project plan more than the fully working current code
+  - `multi_city_batch_pipeline.py` is now the preferred daily batch DAG
 
 - `dashboard/`
   - `app.py` is the legacy Streamlit batch dashboard
@@ -129,6 +130,8 @@ That path is centered around:
 - `src/common/config.py`
 - `src/common/constants.py`
 - `src/common/paths.py`
+- `src/common/run_metadata.py`
+- `jobs/pipeline/run_city_batch_pipeline.py`
 - `jobs/ingestion/download_osm.py`
 - `jobs/spark/clean_gtfs_city.py`
 - `jobs/spark/clean_osm_city.py`
@@ -142,6 +145,40 @@ The new path writes city-scoped parquet outputs under:
 - `data/processed/{city}/analytics/...`
 
 This lets Boston and Chicago share one batch pattern without requiring a major repo reorganization.
+
+### Batch Idempotency And Resume Model
+
+The city-aware batch path now includes lightweight run-manifest and checkpoint behavior.
+
+Key ideas:
+
+- every stage records a manifest JSON
+- manifests include row counts and path stats where available
+- rerunning the same `run_id` skips completed stages if outputs still exist
+- a full city batch run can be resumed through `jobs/pipeline/run_city_batch_pipeline.py`
+
+This is not a fully transactional warehouse pipeline, but it is intentionally designed to be:
+
+- rerunnable
+- practically idempotent for local development
+- resumable after stage-level failures
+
+That makes it a much better fit for the current project than a brittle one-shot script chain.
+
+### Batch Scheduling Layer
+
+The city-aware batch path now has two orchestration entrypoints:
+
+- Airflow:
+  - `dags/multi_city_batch_pipeline.py`
+- manual shell entrypoint:
+  - `scripts/run_batch_pipeline.sh`
+
+The intended pattern is:
+
+- Airflow runs Chicago and Boston once per day
+- a shared Snowflake load follows both city runs
+- local/manual runs use the same underlying Python batch pipeline, not a different code path
 
 ## Design Intent
 
