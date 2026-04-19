@@ -8,6 +8,18 @@ import "maplibre-gl/dist/maplibre-gl.css";
 const API_BASE_URL = import.meta.env.VITE_LIVE_API_URL || "http://127.0.0.1:8000";
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
 
+// CTA L-line brand colors (used when city=chicago and route_type=1)
+const CTA_LINE_COLORS = {
+  red:  [198,  12,  36, 235],
+  blue: [  0, 161, 222, 235],
+  brn:  [ 98,  54,  27, 235],
+  g:    [  0, 155,  58, 235],
+  org:  [249,  70,  28, 235],
+  p:    [ 82,  35, 152, 235],
+  pink: [226, 126, 166, 235],
+  y:    [249, 227,   0, 245],
+};
+
 function statusColor(status) {
   switch (status) {
     case "IN_TRANSIT_TO":
@@ -21,6 +33,51 @@ function statusColor(status) {
   }
 }
 
+function displayStatus(vehicle) {
+  if (vehicle.current_status === "IN_TRANSIT_TO") {
+    return "In transit";
+  }
+  if (vehicle.current_status === "STOPPED_AT") {
+    return vehicle.city === "chicago" && vehicle.route_type === 3 ? "Delayed" : "Stopped";
+  }
+  if (vehicle.current_status === "INCOMING_AT") {
+    return "Approaching stop";
+  }
+
+  if (vehicle.city === "chicago" && vehicle.route_type === 3) {
+    return "Reporting live";
+  }
+
+  return "Unknown";
+}
+
+function vehicleColor(vehicle) {
+  // Chicago L-trains: use authentic CTA line brand colors
+  if (vehicle.city === "chicago" && vehicle.route_type === 1) {
+    const color = CTA_LINE_COLORS[vehicle.route_id?.toLowerCase()];
+    return color ?? [120, 120, 120, 220];
+  }
+  // Chicago buses: orange
+  if (vehicle.city === "chicago" && vehicle.route_type === 3) {
+    return [255, 131, 43, 220];
+  }
+  // Boston / other: status-based color
+  return statusColor(vehicle.current_status);
+}
+
+function vehicleRadius(vehicle) {
+  if (vehicle.city === "chicago" && vehicle.route_type === 1) {
+    return 66;
+  }
+  if (vehicle.city === "chicago" && vehicle.route_type === 3) {
+    return 56;
+  }
+  if (vehicle.route_type === 1 || vehicle.route_type === 2) {
+    return 58;
+  }
+  return 46;
+}
+
 function routeTypeLabel(routeType) {
   const labels = {
     0: "Light rail",
@@ -32,6 +89,26 @@ function routeTypeLabel(routeType) {
   return labels[routeType] || "Transit";
 }
 
+function cityViewState(city) {
+  if (!city) {
+    return {
+      latitude: 42.3601,
+      longitude: -71.0589,
+      zoom: 11.2,
+      bearing: 0,
+      pitch: 35,
+    };
+  }
+
+  return {
+    latitude: city.latitude,
+    longitude: city.longitude,
+    zoom: city.zoom,
+    bearing: 0,
+    pitch: 35,
+  };
+}
+
 function App() {
   const [cities, setCities] = useState([]);
   const [selectedCity, setSelectedCity] = useState("boston");
@@ -40,6 +117,7 @@ function App() {
   const [health, setHealth] = useState(null);
   const [connectionState, setConnectionState] = useState("connecting");
   const [errorMessage, setErrorMessage] = useState("");
+  const [mapViewState, setMapViewState] = useState(cityViewState(null));
 
   useEffect(() => {
     async function loadCities() {
@@ -85,6 +163,7 @@ function App() {
       setErrorMessage(error.message);
     });
     loadHealth();
+    setRouteFilter("");
   }, [selectedCity]);
 
   useEffect(() => {
@@ -132,31 +211,20 @@ function App() {
   const deferredVehicles = useDeferredValue(filteredVehicles);
 
   const cityConfig = cities.find((city) => city.slug === selectedCity);
-  const viewState = cityConfig
-    ? {
-        latitude: cityConfig.latitude,
-        longitude: cityConfig.longitude,
-        zoom: cityConfig.zoom,
-        bearing: 0,
-        pitch: 35,
-      }
-    : {
-        latitude: 42.3601,
-        longitude: -71.0589,
-        zoom: 11.2,
-        bearing: 0,
-        pitch: 35,
-      };
+
+  useEffect(() => {
+    setMapViewState(cityViewState(cityConfig));
+  }, [selectedCity, cityConfig]);
 
   const layer = new ScatterplotLayer({
     id: "vehicle-positions",
     data: deferredVehicles,
     getPosition: (vehicle) => [vehicle.longitude, vehicle.latitude],
-    getFillColor: (vehicle) => statusColor(vehicle.current_status),
+    getFillColor: (vehicle) => vehicleColor(vehicle),
     getLineColor: [16, 24, 39, 220],
-    getRadius: 42,
-    radiusMinPixels: 4,
-    radiusMaxPixels: 12,
+    getRadius: (vehicle) => vehicleRadius(vehicle),
+    radiusMinPixels: 5,
+    radiusMaxPixels: 16,
     pickable: true,
     stroked: true,
     filled: true,
@@ -168,10 +236,11 @@ function App() {
       <section className="hero-panel">
         <div>
           <p className="eyebrow">Realtime Transit Command View</p>
-          <h1>Boston live vehicles over a real city map</h1>
+          <h1>Live transit — Boston &amp; Chicago</h1>
           <p className="hero-copy">
-            Kafka and Flink can sit upstream later. For now, this frontend is already
-            wired for live position updates, city-aware APIs, and future OSM overlays.
+            Multi-city live vehicle tracking. Boston shows MBTA buses, subway, and
+            commuter rail. Chicago shows CTA buses (orange) and L-trains colored by
+            line. Switch cities above to pan the map and update the live feed.
           </p>
         </div>
         <div className={`connection-pill connection-${connectionState}`}>
@@ -246,7 +315,8 @@ function App() {
         <main className="map-panel">
           <div className="map-frame">
             <DeckGL
-              initialViewState={viewState}
+              viewState={mapViewState}
+              onViewStateChange={({ viewState }) => setMapViewState(viewState)}
               controller={true}
               layers={[layer]}
               getTooltip={({ object }) =>
@@ -256,7 +326,7 @@ function App() {
                         <div class="tooltip-title">${object.label || object.vehicle_id}</div>
                         <div>Route: ${object.route_label || object.route_id || "Unknown"}</div>
                         <div>Mode: ${routeTypeLabel(object.route_type)}</div>
-                        <div>Status: ${object.current_status || "Unknown"}</div>
+                        <div>Status: ${displayStatus(object)}</div>
                         <div>Updated: ${object.updated_at ? new Date(object.updated_at).toLocaleTimeString() : "Unknown"}</div>
                       `,
                     }
@@ -292,7 +362,7 @@ function App() {
                     <tr key={vehicle.vehicle_id}>
                       <td>{vehicle.label || vehicle.vehicle_id}</td>
                       <td>{vehicle.route_label || vehicle.route_id || "Unknown"}</td>
-                      <td>{vehicle.current_status || "Unknown"}</td>
+                      <td>{displayStatus(vehicle)}</td>
                       <td>{vehicle.updated_at ? new Date(vehicle.updated_at).toLocaleTimeString() : "Unknown"}</td>
                     </tr>
                   ))}

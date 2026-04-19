@@ -10,17 +10,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.live.config import LIVE_POLL_INTERVAL_SECONDS
+from src.live.config import get_live_poll_interval_seconds
 from src.live.mbta import MbtaVehicleClient
 from src.live.redis_store import RedisLiveStateStore
 
 
-async def run(city: str, interval_seconds: float, once: bool) -> None:
+async def run(city: str, interval_seconds: float | None, once: bool) -> None:
     if city != "boston":
         raise ValueError("Only Boston live ingestion is implemented right now.")
 
     client = MbtaVehicleClient()
     store = RedisLiveStateStore()
+    effective_interval = interval_seconds if interval_seconds is not None else get_live_poll_interval_seconds(city)
 
     try:
         while True:
@@ -35,7 +36,7 @@ async def run(city: str, interval_seconds: float, once: bool) -> None:
             if once:
                 break
 
-            await asyncio.sleep(max(0.0, interval_seconds - elapsed))
+            await asyncio.sleep(max(0.0, effective_interval - elapsed))
     finally:
         await client.close()
         await store.close()
@@ -44,7 +45,7 @@ async def run(city: str, interval_seconds: float, once: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Poll MBTA live vehicles and upsert the latest state into Redis.")
     parser.add_argument("--city", default="boston")
-    parser.add_argument("--interval", type=float, default=LIVE_POLL_INTERVAL_SECONDS)
+    parser.add_argument("--interval", type=float, default=None)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 

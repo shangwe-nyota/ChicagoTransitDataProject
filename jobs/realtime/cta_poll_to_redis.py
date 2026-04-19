@@ -2,37 +2,28 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import sys
 import time
 from pathlib import Path
-
-from kafka import KafkaProducer
+import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.live.config import get_live_poll_interval_seconds
-from src.live.mbta import MbtaVehicleClient
-from src.live.topics import KAFKA_BOOTSTRAP_SERVERS, kafka_raw_topic
-
-
-def create_producer() -> KafkaProducer:
-    return KafkaProducer(
-        bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-        value_serializer=lambda payload: json.dumps(payload).encode("utf-8"),
-        linger_ms=50,
-    )
+from src.live.cta import CtaVehicleClient
+from src.live.redis_store import RedisLiveStateStore
 
 
 async def run(city: str, interval_seconds: float | None, once: bool) -> None:
-    if city != "boston":
-        raise ValueError("Only Boston live ingestion is implemented right now.")
+    if city != "chicago":
+        raise ValueError(
+            f"This poller is for Chicago only. Got city={city!r}. "
+            "Use mbta_poll_to_redis.py for Boston."
+        )
 
-    client = MbtaVehicleClient()
-    producer = create_producer()
-    topic = kafka_raw_topic(city)
+    client = CtaVehicleClient()
+    store = RedisLiveStateStore()
     effective_interval = interval_seconds if interval_seconds is not None else get_live_poll_interval_seconds(city)
 
     try:
@@ -40,24 +31,28 @@ async def run(city: str, interval_seconds: float | None, once: bool) -> None:
             started = time.perf_counter()
             vehicles = await client.fetch_vehicle_positions()
             for vehicle in vehicles:
-                producer.send(topic, vehicle.model_dump(mode="json"))
+                await store.upsert_vehicle(vehicle)
 
-            producer.flush()
             elapsed = time.perf_counter() - started
-            print(f"[kafka-producer] wrote {len(vehicles)} vehicles to {topic} in {elapsed:.2f}s")
+            print(
+                f"[live] wrote {len(vehicles)} Chicago vehicles to Redis in {elapsed:.2f}s",
+                flush=True,
+            )
 
             if once:
                 break
 
             await asyncio.sleep(max(0.0, effective_interval - elapsed))
     finally:
-        producer.close()
         await client.close()
+        await store.close()
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Poll MBTA live vehicles and publish normalized events to Kafka.")
-    parser.add_argument("--city", default="boston")
+    parser = argparse.ArgumentParser(
+        description="Poll CTA live vehicles (buses + trains) and upsert into Redis directly."
+    )
+    parser.add_argument("--city", default="chicago")
     parser.add_argument("--interval", type=float, default=None)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()

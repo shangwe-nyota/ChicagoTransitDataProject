@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.live.config import get_live_poll_interval_seconds
-from src.live.mbta import MbtaVehicleClient
+from src.live.cta import CtaVehicleClient
 from src.live.topics import KAFKA_BOOTSTRAP_SERVERS, kafka_raw_topic
 
 
@@ -27,10 +27,13 @@ def create_producer() -> KafkaProducer:
 
 
 async def run(city: str, interval_seconds: float | None, once: bool) -> None:
-    if city != "boston":
-        raise ValueError("Only Boston live ingestion is implemented right now.")
+    if city != "chicago":
+        raise ValueError(
+            f"This poller is for Chicago only. Got city={city!r}. "
+            "Use mbta_poll_to_kafka.py for Boston."
+        )
 
-    client = MbtaVehicleClient()
+    client = CtaVehicleClient()
     producer = create_producer()
     topic = kafka_raw_topic(city)
     effective_interval = interval_seconds if interval_seconds is not None else get_live_poll_interval_seconds(city)
@@ -44,7 +47,11 @@ async def run(city: str, interval_seconds: float | None, once: bool) -> None:
 
             producer.flush()
             elapsed = time.perf_counter() - started
-            print(f"[kafka-producer] wrote {len(vehicles)} vehicles to {topic} in {elapsed:.2f}s")
+            print(
+                f"[kafka-producer] wrote {len(vehicles)} Chicago vehicles "
+                f"to {topic} in {elapsed:.2f}s",
+                flush=True,
+            )
 
             if once:
                 break
@@ -56,8 +63,10 @@ async def run(city: str, interval_seconds: float | None, once: bool) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Poll MBTA live vehicles and publish normalized events to Kafka.")
-    parser.add_argument("--city", default="boston")
+    parser = argparse.ArgumentParser(
+        description="Poll CTA live vehicles (buses + trains) and publish to Kafka."
+    )
+    parser.add_argument("--city", default="chicago")
     parser.add_argument("--interval", type=float, default=None)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
