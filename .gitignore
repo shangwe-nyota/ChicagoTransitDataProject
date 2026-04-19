@@ -4,4 +4,12 @@ _SUCCESS
 __pycache__/
 *.pyc
 .env
+AGENTS.md
 .idea/
+.flink/
+.live/
+dashboard/web/node_modules/
+dashboard/web/dist/
+dashboard/web/.vite/
+.venv-live/
+tools/flink/connectors/*.jar
