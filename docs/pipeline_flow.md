@@ -112,6 +112,28 @@ Useful URLs:
 - `http://127.0.0.1:8000/api/live/boston/health`
 - `http://127.0.0.1:8000/api/live/chicago/health`
 
+## 5b. Shared Dashboard Flow
+
+The newer dashboard now has two operating modes in one React app:
+
+1. `Live Ops`
+   - Redis-backed
+   - WebSocket-updated
+   - powered by the realtime stack
+2. `Batch Atlas`
+   - Snowflake-backed through FastAPI
+   - powered by the multi-city GTFS + OSM batch tables
+
+Batch API endpoints currently used by the frontend:
+
+- `GET /api/batch/cities`
+- `GET /api/batch/comparison`
+- `GET /api/batch/{city}/dashboard`
+- `GET /api/batch/{city}/routes`
+- `GET /api/batch/{city}/routes/{route_id}`
+
+This keeps the browser decoupled from direct Snowflake access while still using the warehouse as the source of truth for batch analytics.
+
 ## 6. Shared City-Aware Batch Flow
 
 The repo now has a newer city-aware batch path alongside the legacy Chicago-only jobs.

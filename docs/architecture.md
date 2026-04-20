@@ -29,6 +29,11 @@ Core layers:
 - modern frontend in `dashboard/web/`
 - orchestration via `scripts/live.sh`
 
+That same frontend now also contains a Snowflake-backed batch mode, so `dashboard/live_api.py` is effectively the shared serving layer for:
+
+- live Redis-backed endpoints
+- batch Snowflake-backed endpoints
+
 ### Emerging Multi-City Direction
 
 The intended platform direction is:
@@ -120,6 +125,31 @@ City-specific live source adapters:
   - `src/live/mbta.py`
 - Chicago:
   - `src/live/cta.py`
+
+### Batch Serving
+
+Batch is now exposed through FastAPI rather than sending the browser directly to Snowflake.
+
+Current serving layer:
+
+- query logic in `src/batch/service.py`
+- API endpoints in `dashboard/live_api.py`
+- React batch visual layer in `dashboard/web/src/App.jsx`
+
+The batch serving path is intentionally cache-friendly because the underlying GTFS + OSM outputs refresh on a daily schedule rather than every few seconds:
+
+- FastAPI keeps an in-memory cache of Snowflake query results
+- the cache TTL is controlled by `BATCH_API_CACHE_TTL_SECONDS`
+- the React app now memoizes city snapshots and previously opened route details in-session
+
+That means Snowflake remains the batch source of truth, but repeated route switches and city revisits should not keep re-querying the warehouse during normal dashboard use.
+
+This allows the newer frontend to combine:
+
+- live map state from Redis
+- batch GTFS + OSM analytics from Snowflake
+
+without splitting into multiple frontend apps.
 
 ### Emerging City-Aware Batch Path
 

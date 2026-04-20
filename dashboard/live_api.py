@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.batch.service import SnowflakeBatchService
+from src.common.config import get_batch_city_config
 from src.live.config import CITY_CONFIGS, get_city_config
 from src.live.models import LiveCityResponse, LiveVehiclesResponse
 from src.live.redis_store import RedisLiveStateStore
@@ -15,7 +17,9 @@ from src.live.redis_store import RedisLiveStateStore
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store = RedisLiveStateStore()
+    batch_service = SnowflakeBatchService()
     app.state.live_store = store
+    app.state.batch_service = batch_service
     yield
     await store.close()
 
@@ -44,12 +48,73 @@ def get_store(app_: FastAPI) -> RedisLiveStateStore:
     return app_.state.live_store
 
 
+def get_batch_service(app_: FastAPI) -> SnowflakeBatchService:
+    return app_.state.batch_service
+
+
 @app.get("/api/live/cities", response_model=list[LiveCityResponse])
 async def list_live_cities():
     return [
         LiveCityResponse(**city.__dict__)
         for city in CITY_CONFIGS.values()
     ]
+
+
+@app.get("/api/batch/cities")
+async def list_batch_cities():
+    service = get_batch_service(app)
+    return service.list_batch_cities()
+
+
+@app.get("/api/batch/comparison")
+async def get_batch_comparison():
+    service = get_batch_service(app)
+    return await asyncio.to_thread(service.get_city_comparison)
+
+
+@app.get("/api/batch/{city}/dashboard")
+async def get_batch_dashboard(city: str, stop_limit: int = 200, route_limit: int = 25):
+    try:
+        get_batch_city_config(city)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    service = get_batch_service(app)
+    return await asyncio.to_thread(
+        service.get_city_dashboard,
+        city,
+        stop_limit,
+        route_limit,
+    )
+
+
+@app.get("/api/batch/{city}/routes")
+async def list_batch_routes(city: str, limit: int = 500):
+    try:
+        get_batch_city_config(city)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    service = get_batch_service(app)
+    return {
+        "city": city,
+        "routes": await asyncio.to_thread(service.list_routes, city, limit),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/batch/{city}/routes/{route_id}")
+async def get_batch_route_detail(city: str, route_id: str, stop_limit: int = 80):
+    try:
+        get_batch_city_config(city)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    service = get_batch_service(app)
+    try:
+        return await asyncio.to_thread(service.get_route_detail, city, route_id, stop_limit)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/live/{city}/vehicles", response_model=LiveVehiclesResponse)

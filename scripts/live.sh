@@ -7,7 +7,6 @@ source "$(dirname "$0")/live_env.sh"
 RUNTIME_DIR="${PROJECT_ROOT}/.live"
 PID_DIR="${RUNTIME_DIR}/pids"
 LOG_DIR="${RUNTIME_DIR}/logs"
-TARGET="${2:-${LIVE_CITIES:-both}}"
 KAFKA_HOME="${KAFKA_HOME:-/opt/homebrew/opt/kafka}"
 KAFKA_CONFIG="${KAFKA_CONFIG:-/opt/homebrew/etc/kafka/server.properties}"
 
@@ -32,8 +31,14 @@ resolve_target_cities() {
   esac
 }
 
-TARGET_CITIES=( $(resolve_target_cities "${TARGET}") )
-TARGET_LABEL="$(IFS=,; echo "${TARGET_CITIES[*]}")"
+TARGET_CITIES=()
+TARGET_LABEL=""
+
+set_target_context() {
+  local target="${1:-${LIVE_CITIES:-both}}"
+  TARGET_CITIES=( $(resolve_target_cities "${target}") )
+  TARGET_LABEL="$(IFS=,; echo "${TARGET_CITIES[*]}")"
+}
 
 is_port_listening() {
   local port="$1"
@@ -58,6 +63,16 @@ kill_listeners_on_port() {
   stubborn_pids="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
   if [[ -n "${stubborn_pids}" ]]; then
     kill -9 ${stubborn_pids} >/dev/null 2>&1 || true
+  fi
+}
+
+kill_matching_processes() {
+  local pattern="$1"
+  local label="$2"
+
+  if pkill -f "${pattern}" >/dev/null 2>&1; then
+    echo "Stopped ${label} process(es) matching: ${pattern}"
+    sleep 1
   fi
 }
 
@@ -118,6 +133,8 @@ start_background_if_port_free() {
   local name="$1"
   local port="$2"
   shift 2
+  local pid_file="${PID_DIR}/${name}.pid"
+  local log_file="${LOG_DIR}/${name}.log"
 
   if is_port_listening "${port}"; then
     echo "${name} already has something listening on ${port}; skipping startup"
@@ -126,7 +143,29 @@ start_background_if_port_free() {
 
   start_background "${name}" "$@"
 
-  wait_for_port 127.0.0.1 "${port}" 15
+  if wait_for_port 127.0.0.1 "${port}" 15; then
+    return 0
+  fi
+
+  if [[ -f "${log_file}" ]] && grep -q "Address already in use" "${log_file}"; then
+    echo "${name} hit a port conflict on ${port}; retrying after cleanup"
+    if is_pid_running "${pid_file}"; then
+      stop_pid_file "${name}"
+    else
+      rm -f "${pid_file}"
+    fi
+    case "${name}" in
+      live_api)
+        kill_matching_processes "uvicorn dashboard.live_api:app" "live_api orphan"
+        ;;
+      live_dashboard)
+        kill_matching_processes "vite --host 127.0.0.1 --port 5173 --strictPort" "live_dashboard orphan"
+        ;;
+    esac
+    kill_listeners_on_port "${port}" "${name}"
+    start_background "${name}" "$@"
+    wait_for_port 127.0.0.1 "${port}" 15
+  fi
 }
 
 cleanup_stale_pid_files() {
@@ -223,6 +262,11 @@ start_app() {
     echo "  Health (${city}): http://127.0.0.1:8000/api/live/${city}/health"
   done
   echo
+  echo "Batch Atlas"
+  echo "  The same UI also includes the Snowflake-backed Batch Atlas mode."
+  echo "  Refresh batch data with:"
+  echo "    bash scripts/run_batch_pipeline.sh all --load-snowflake"
+  echo
   echo "Useful commands"
   echo "  bash scripts/live.sh status"
   echo "  bash scripts/live.sh logs"
@@ -292,6 +336,8 @@ stop_all() {
   pkill -f "jobs.realtime.cta_poll_to_redis" >/dev/null 2>&1 || true
   pkill -f "jobs.realtime.kafka_latest_to_redis" >/dev/null 2>&1 || true
   pkill -f "jobs/realtime/flink_vehicle_latest_job.py" >/dev/null 2>&1 || true
+  pkill -f "uvicorn dashboard.live_api:app" >/dev/null 2>&1 || true
+  pkill -f "vite --host 127.0.0.1 --port 5173 --strictPort" >/dev/null 2>&1 || true
 
   kill_listeners_on_port 5173 "dashboard"
   kill_listeners_on_port 8000 "API"
@@ -336,15 +382,19 @@ COMMAND="${1:-status}"
 
 case "${COMMAND}" in
   infra)
+    set_target_context "${2:-${LIVE_CITIES:-both}}"
     start_infra
     ;;
   stream)
+    set_target_context "${2:-${LIVE_CITIES:-both}}"
     start_stream
     ;;
   app)
+    set_target_context "${2:-${LIVE_CITIES:-both}}"
     start_app
     ;;
   all)
+    set_target_context "${2:-${LIVE_CITIES:-both}}"
     start_infra
     start_stream
     start_app
