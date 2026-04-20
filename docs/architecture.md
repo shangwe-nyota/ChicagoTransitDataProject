@@ -140,6 +140,8 @@ The batch serving path is intentionally cache-friendly because the underlying GT
 
 - FastAPI keeps an in-memory cache of Snowflake query results
 - the cache TTL is controlled by `BATCH_API_CACHE_TTL_SECONDS`
+- FastAPI can prewarm a full multi-city batch bootstrap snapshot on startup via `BATCH_API_PREWARM_ON_STARTUP`
+- the shared bootstrap endpoint gives the frontend both city snapshots up front instead of making the browser fan out into many first-load warehouse requests
 - the React app now memoizes city snapshots and previously opened route details in-session
 
 That means Snowflake remains the batch source of truth, but repeated route switches and city revisits should not keep re-querying the warehouse during normal dashboard use.
