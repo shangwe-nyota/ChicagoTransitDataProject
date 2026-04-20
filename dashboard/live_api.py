@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -20,6 +21,12 @@ async def lifespan(app: FastAPI):
     batch_service = SnowflakeBatchService()
     app.state.live_store = store
     app.state.batch_service = batch_service
+    should_prewarm_batch = os.getenv("BATCH_API_PREWARM_ON_STARTUP", "false").lower() in {"1", "true", "yes"}
+    if should_prewarm_batch:
+        try:
+            await asyncio.to_thread(batch_service.prewarm_bootstrap_snapshot)
+        except Exception as exc:
+            print(f"Batch snapshot prewarm skipped due to startup error: {exc}")
     yield
     await store.close()
 
@@ -70,6 +77,12 @@ async def list_batch_cities():
 async def get_batch_comparison():
     service = get_batch_service(app)
     return await asyncio.to_thread(service.get_city_comparison)
+
+
+@app.get("/api/batch/bootstrap")
+async def get_batch_bootstrap():
+    service = get_batch_service(app)
+    return await asyncio.to_thread(service.get_bootstrap_snapshot)
 
 
 @app.get("/api/batch/{city}/dashboard")

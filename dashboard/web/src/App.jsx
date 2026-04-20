@@ -19,6 +19,26 @@ const CTA_LINE_COLORS = {
   y: [249, 227, 0, 245],
 };
 
+const BATCH_ACTIVITY_SCALE = ["#67b7ff", "#56d39d", "#f7c948", "#f97316"];
+const BATCH_ACCESS_SCALE = ["#7dd3fc", "#38bdf8", "#34d399", "#16a34a"];
+const AMENITY_GROUP_COLORS = {
+  food: "#f97316",
+  education: "#8b5cf6",
+  healthcare: "#ef4444",
+  grocery: "#14b8a6",
+  civic: "#60a5fa",
+  park: "#22c55e",
+  entertainment: "#f59e0b",
+  other: "#94a3b8",
+};
+const ROUTE_MODE_COLORS = {
+  0: "#f59e0b",
+  1: "#ef4444",
+  2: "#60a5fa",
+  3: "#22c55e",
+  4: "#14b8a6",
+};
+
 function statusColor(status) {
   switch (status) {
     case "IN_TRANSIT_TO":
@@ -102,6 +122,44 @@ function cityViewState(city) {
   };
 }
 
+function routeViewStateFromDetail(detail, fallbackCity) {
+  const stopPoints = (detail?.stops ?? [])
+    .filter((stop) => Number.isFinite(stop.stop_lat) && Number.isFinite(stop.stop_lon))
+    .map((stop) => [Number(stop.stop_lon), Number(stop.stop_lat)]);
+
+  const pathPoints = (detail?.paths ?? []).flatMap((path) => path.path || []);
+  const allPoints = [...pathPoints, ...stopPoints].filter(
+    (point) => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]),
+  );
+
+  if (allPoints.length === 0) {
+    return cityViewState(fallbackCity);
+  }
+
+  const lons = allPoints.map((point) => point[0]);
+  const lats = allPoints.map((point) => point[1]);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const span = Math.max(maxLon - minLon, maxLat - minLat);
+
+  let zoom = 12.3;
+  if (span > 0.7) zoom = 9.6;
+  else if (span > 0.45) zoom = 10.3;
+  else if (span > 0.2) zoom = 11;
+  else if (span > 0.08) zoom = 11.8;
+  else if (span > 0.03) zoom = 12.8;
+
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLon + maxLon) / 2,
+    zoom,
+    bearing: 0,
+    pitch: 30,
+  };
+}
+
 function formatNumber(value) {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) {
@@ -116,6 +174,14 @@ function formatCompact(value) {
     return "0";
   }
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(numeric);
+}
+
+function formatPercent(value) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
+    return "0%";
+  }
+  return `${numeric.toFixed(0)}%`;
 }
 
 function formatTime(value) {
@@ -135,15 +201,57 @@ function routeLabel(route) {
   return route.route_short_name || route.route_long_name || route.route_id || "Unknown route";
 }
 
+function amenityGroupLabel(group) {
+  const labels = {
+    food: "Food and cafes",
+    education: "Education",
+    healthcare: "Healthcare",
+    grocery: "Groceries",
+    civic: "Civic places",
+    park: "Parks",
+    entertainment: "Entertainment",
+    other: "Other amenities",
+  };
+  return labels[group] || group || "Other amenities";
+}
+
+function batchLensTitle(lens) {
+  return lens === "access" ? "Neighborhood access" : "Service intensity";
+}
+
+function batchLensDescription(lens) {
+  return lens === "access"
+    ? "Highlights stops with the richest mix of daily destinations within a short walk."
+    : "Highlights where scheduled service concentrates most heavily across the network.";
+}
+
+function buildConicGradient(rows, valueKey, colorForRow) {
+  const total = rows.reduce((sum, row) => sum + Number(row[valueKey] || 0), 0);
+  if (!total) {
+    return "conic-gradient(#334155 0turn, #334155 1turn)";
+  }
+
+  let start = 0;
+  const segments = rows.map((row) => {
+    const portion = Number(row[valueKey] || 0) / total;
+    const end = start + portion;
+    const color = colorForRow(row);
+    const segment = `${color} ${start}turn ${end}turn`;
+    start = end;
+    return segment;
+  });
+  return `conic-gradient(${segments.join(", ")})`;
+}
+
 function batchStopColor(stop, lens, maxValue) {
-  const score = lens === "poi" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
+  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
   const ratio = maxValue > 0 ? score / maxValue : 0;
 
-  if (lens === "poi") {
+  if (lens === "access") {
     if (ratio > 0.75) return [22, 163, 74, 235];
-    if (ratio > 0.45) return [74, 222, 128, 230];
-    if (ratio > 0.2) return [251, 191, 36, 220];
-    return [56, 189, 248, 210];
+    if (ratio > 0.45) return [52, 211, 153, 230];
+    if (ratio > 0.2) return [56, 189, 248, 220];
+    return [125, 211, 252, 210];
   }
 
   if (ratio > 0.75) return [244, 114, 54, 235];
@@ -153,13 +261,13 @@ function batchStopColor(stop, lens, maxValue) {
 }
 
 function batchStopRadius(stop, lens, maxValue) {
-  const score = lens === "poi" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
+  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
   const ratio = maxValue > 0 ? score / maxValue : 0;
   return Math.max(42, Math.min(180, 42 + ratio * 120));
 }
 
 function rowValue(row, lens) {
-  return lens === "poi" ? row.poi_count_within_400m ?? 0 : row.trip_count ?? 0;
+  return lens === "access" ? row.poi_count_within_400m ?? 0 : row.trip_count ?? 0;
 }
 
 function ModeToggle({ mode, setMode }) {
@@ -189,6 +297,141 @@ function StatCard({ label, value, accent = "" }) {
       <span className="stat-label">{label}</span>
       <strong>{value}</strong>
     </article>
+  );
+}
+
+function LegendCard({ title, caption, items }) {
+  return (
+    <section className="insight-card">
+      <div className="insight-header">
+        <h3>{title}</h3>
+        <p>{caption}</p>
+      </div>
+      <div className="legend-grid">
+        {items.map((item) => (
+          <div className="legend-item" key={item.label}>
+            <span className="legend-swatch" style={{ background: item.color }} />
+            <div>
+              <strong>{item.label}</strong>
+              <small>{item.description}</small>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function BarChartCard({ title, caption, rows, labelKey, valueKey, formatLabel, formatValue, color }) {
+  const maxValue = rows.reduce((currentMax, row) => Math.max(currentMax, Number(row[valueKey] || 0)), 0);
+
+  return (
+    <section className="insight-card">
+      <div className="insight-header">
+        <h3>{title}</h3>
+        <p>{caption}</p>
+      </div>
+      <div className="bar-chart">
+        {rows.map((row, index) => {
+          const value = Number(row[valueKey] || 0);
+          const width = maxValue > 0 ? (value / maxValue) * 100 : 0;
+          return (
+            <div className="bar-row" key={`${title}-${index}-${row.stop_id || row.route_id || row.poi_group || row.route_type}`}>
+              <div className="bar-copy">
+                <strong>{formatLabel ? formatLabel(row[labelKey], row) : row[labelKey]}</strong>
+                <span>{formatValue ? formatValue(value, row) : formatNumber(value)}</span>
+              </div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${width}%`, background: color(row) }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function DonutBreakdownCard({ title, caption, rows, valueKey, labelForRow, colorForRow }) {
+  const total = rows.reduce((sum, row) => sum + Number(row[valueKey] || 0), 0);
+  const chartBackground = buildConicGradient(rows, valueKey, colorForRow);
+
+  return (
+    <section className="insight-card donut-card">
+      <div className="insight-header">
+        <h3>{title}</h3>
+        <p>{caption}</p>
+      </div>
+      <div className="donut-layout">
+        <div className="donut-shell" style={{ background: chartBackground }}>
+          <div className="donut-center">
+            <span>Total</span>
+            <strong>{formatCompact(total)}</strong>
+          </div>
+        </div>
+        <div className="donut-legend">
+          {rows.map((row) => (
+            <div className="donut-row" key={`${title}-${labelForRow(row)}`}>
+              <span className="legend-swatch" style={{ background: colorForRow(row) }} />
+              <div>
+                <strong>{labelForRow(row)}</strong>
+                <small>{formatNumber(row[valueKey])}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RouteSpotlightMap({ detail, fallbackCity }) {
+  const routeMapViewState = routeViewStateFromDetail(detail, fallbackCity);
+  const pathLayer = new PathLayer({
+    id: "route-spotlight-paths",
+    data: detail?.paths ?? [],
+    getPath: (row) => row.path,
+    getColor: [255, 196, 61, 235],
+    getWidth: 6,
+    widthMinPixels: 3,
+    widthMaxPixels: 8,
+    pickable: false,
+  });
+  const stopLayer = new ScatterplotLayer({
+    id: "route-spotlight-stops",
+    data: detail?.stops ?? [],
+    getPosition: (row) => [row.stop_lon, row.stop_lat],
+    getFillColor: (row) => (row.poi_count_within_400m ? [125, 211, 252, 220] : [248, 250, 252, 200]),
+    getLineColor: [15, 23, 42, 255],
+    getRadius: (row) => Math.max(40, Math.min(120, 28 + Math.sqrt(Number(row.trip_count || 0)))),
+    radiusMinPixels: 5,
+    radiusMaxPixels: 16,
+    pickable: true,
+    stroked: true,
+    filled: true,
+  });
+
+  return (
+    <div className="route-map-shell">
+      <DeckGL
+        viewState={routeMapViewState}
+        controller={true}
+        layers={[pathLayer, stopLayer]}
+        getTooltip={({ object }) =>
+          object
+            ? {
+                html: `
+                  <div class="tooltip-title">${object.stop_name || "Route corridor"}</div>
+                  ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
+                  ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
+                `,
+              }
+            : null
+        }
+      >
+        <Map reuseMaps={true} mapLib={maplibregl} mapStyle={MAP_STYLE} attributionControl={false} />
+      </DeckGL>
+    </div>
   );
 }
 
@@ -267,11 +510,11 @@ function ComparisonCard({ city }) {
           <strong>{formatNumber(city.total_routes)}</strong>
         </div>
         <div>
-          <span>Avg POIs / stop</span>
+          <span>Avg amenities / stop</span>
           <strong>{Number(city.avg_poi_access_per_stop || 0).toFixed(1)}</strong>
         </div>
         <div>
-          <span>POI-ready stops</span>
+          <span>Stops with access context</span>
           <strong>{formatNumber(city.stops_with_poi_context)}</strong>
         </div>
       </div>
@@ -442,6 +685,7 @@ function LiveWorkspace({
 
 function BatchWorkspace({
   cities,
+  cityMetadata,
   selectedCity,
   setSelectedCity,
   batchLens,
@@ -452,6 +696,7 @@ function BatchWorkspace({
   selectedBatchRouteId,
   setSelectedBatchRouteId,
   batchRouteDetail,
+  batchRoutePreview,
   batchLoading,
   batchRouteLoading,
   batchError,
@@ -459,9 +704,29 @@ function BatchWorkspace({
   setBatchMapViewState,
 }) {
   const topStopsForLens =
-    batchLens === "poi"
+    batchLens === "access"
       ? batchDashboard?.top_stops_by_poi ?? []
       : batchDashboard?.top_stops_by_activity ?? [];
+  const topRoutesForLens =
+    batchLens === "access"
+      ? batchDashboard?.top_routes_by_poi ?? []
+      : batchDashboard?.top_routes_by_activity ?? [];
+  const amenityMix = (batchDashboard?.amenity_mix ?? []).slice(0, 6);
+  const routeModeMix = (batchDashboard?.route_mode_mix ?? []).slice(0, 5);
+  const topAmenityStops = (batchDashboard?.top_stops_by_poi ?? []).slice(0, 8);
+  const topActivityStops = (batchDashboard?.top_stops_by_activity ?? []).slice(0, 8);
+  const lensLegend =
+    batchLens === "access"
+      ? [
+          { color: BATCH_ACCESS_SCALE[0], label: "Lower access", description: "Fewer nearby daily destinations around the stop." },
+          { color: BATCH_ACCESS_SCALE[2], label: "Balanced access", description: "A healthy mix of food, services, and everyday destinations." },
+          { color: BATCH_ACCESS_SCALE[3], label: "Rich access", description: "Dense clusters of amenities within a short walk." },
+        ]
+      : [
+          { color: BATCH_ACTIVITY_SCALE[0], label: "Lower service", description: "Stops with lighter scheduled intensity." },
+          { color: BATCH_ACTIVITY_SCALE[2], label: "Busy corridor", description: "Strong scheduled frequency and route overlap." },
+          { color: BATCH_ACTIVITY_SCALE[3], label: "Network hotspot", description: "The highest service concentration in the city." },
+        ];
   const lensMaxValue = topStopsForLens.reduce((currentMax, row) => Math.max(currentMax, rowValue(row, batchLens)), 0);
   const batchLayer = new ScatterplotLayer({
     id: "batch-stops",
@@ -479,7 +744,7 @@ function BatchWorkspace({
   });
   const routeStopLayer = new ScatterplotLayer({
     id: "route-stops",
-    data: batchRouteDetail?.stops ?? [],
+    data: batchRoutePreview?.stops ?? batchRouteDetail?.stops ?? [],
     getPosition: (row) => [row.stop_lon, row.stop_lat],
     getFillColor: [248, 250, 252, 180],
     getLineColor: [15, 23, 42, 255],
@@ -502,11 +767,11 @@ function BatchWorkspace({
   });
 
   const selectedRoute = batchRoutes.find((route) => route.route_id === selectedBatchRouteId) ?? null;
-  const mapLayers = [batchLayer];
+  const mapLayers = selectedRoute ? [] : [batchLayer];
   if ((batchRouteDetail?.paths ?? []).length > 0) {
     mapLayers.push(routePathLayer);
   }
-  if ((batchRouteDetail?.stops ?? []).length > 0) {
+  if (((batchRoutePreview?.stops ?? batchRouteDetail?.stops) ?? []).length > 0) {
     mapLayers.push(routeStopLayer);
   }
 
@@ -535,8 +800,8 @@ function BatchWorkspace({
             value={batchLens}
             onChange={(event) => setBatchLens(event.target.value)}
           >
-            <option value="activity">Scheduled activity hotspots</option>
-            <option value="poi">Amenity access hotspots</option>
+            <option value="activity">Service intensity</option>
+            <option value="access">Neighborhood access</option>
           </select>
         </div>
 
@@ -560,7 +825,7 @@ function BatchWorkspace({
           <StatCard label="Stops in batch graph" value={formatNumber(batchDashboard?.overview?.total_stops)} accent="warm" />
           <StatCard label="Routes modeled" value={formatNumber(batchDashboard?.overview?.total_routes)} accent="cool" />
           <StatCard label="Scheduled stop events" value={formatCompact(batchDashboard?.overview?.total_stop_events)} accent="gold" />
-          <StatCard label="Avg POIs per stop" value={Number(batchDashboard?.overview?.avg_poi_access_per_stop || 0).toFixed(1)} accent="green" />
+          <StatCard label="Avg amenities per stop" value={Number(batchDashboard?.overview?.avg_poi_access_per_stop || 0).toFixed(1)} accent="green" />
         </div>
 
         <div className="panel-block">
@@ -577,7 +842,7 @@ function BatchWorkspace({
               <small>{formatCompact(batchDashboard?.overview?.busiest_route?.stop_event_count)} stop events</small>
             </div>
             <div className="snapshot-card">
-              <span>POI leader</span>
+              <span>Top amenity stop</span>
               <strong>{batchDashboard?.overview?.poi_leader?.stop_name || "Loading"}</strong>
               <small>{formatNumber(batchDashboard?.overview?.poi_leader?.poi_count_within_400m)} amenities within 400m</small>
             </div>
@@ -585,7 +850,7 @@ function BatchWorkspace({
         </div>
 
         {batchError ? <div className="error-banner">{batchError}</div> : null}
-        {batchLoading ? <div className="status-banner">Loading batch snapshot from Snowflake…</div> : null}
+        {batchLoading ? <div className="status-banner">Refreshing the daily batch snapshot…</div> : null}
       </aside>
 
       <main className="map-panel">
@@ -601,8 +866,8 @@ function BatchWorkspace({
                     html: `
                       <div class="tooltip-title">${object.stop_name || object.route_long_name || object.shape_id || "Batch feature"}</div>
                       ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
-                      ${object.poi_count_within_400m ? `<div>Amenities within 400m: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
-                      ${object.food_poi_count_within_400m ? `<div>Food nearby: ${formatNumber(object.food_poi_count_within_400m)}</div>` : ""}
+                      ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
+                      ${object.food_poi_count_within_400m ? `<div>Food access: ${formatNumber(object.food_poi_count_within_400m)}</div>` : ""}
                     `,
                   }
                 : null
@@ -612,62 +877,82 @@ function BatchWorkspace({
           </DeckGL>
           <div className="map-overlay-card">
             <p className="eyebrow">Snowflake-backed batch atlas</p>
-            <h2>{batchLens === "poi" ? "Amenity access hot spots" : "Scheduled activity hot spots"}</h2>
+            <h2>{batchLensTitle(batchLens)}</h2>
             <p>
-              {batchLens === "poi"
-                ? "Stops are scaled by nearby amenities, with the selected route drawn as a corridor overlay."
-                : "Stops are scaled by scheduled stop events so you can see where transit intensity concentrates."}
+              {selectedRoute
+                ? `${batchLensDescription(batchLens)} The highlighted corridor shows how ${routeLabel(selectedRoute)} threads through that urban context.`
+                : batchLensDescription(batchLens)}
             </p>
             <div className="map-meta">
               <span>Batch refresh</span>
               <strong>{formatTime(batchDashboard?.generated_at)}</strong>
             </div>
+            <div className="map-meta">
+              <span>Current route spotlight</span>
+              <strong>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route"}</strong>
+            </div>
           </div>
         </div>
 
         <div className="insight-grid">
-          <InsightTable
-            title="Top stops by scheduled activity"
-            caption="Where scheduled service intensity peaks."
-            rows={(batchDashboard?.top_stops_by_activity ?? []).slice(0, 10)}
-            columns={[
-              { key: "stop_name", label: "Stop" },
-              { key: "trip_count", label: "Stop events", render: (row) => formatNumber(row.trip_count) },
-              { key: "poi_count_within_400m", label: "POIs nearby", render: (row) => formatNumber(row.poi_count_within_400m || 0) },
-            ]}
+          <LegendCard
+            title={`${batchLensTitle(batchLens)} legend`}
+            caption="Color and marker size now have one meaning at a time, and this legend stays aligned with the active lens."
+            items={lensLegend}
           />
 
-          <InsightTable
-            title="Top stops by amenity access"
-            caption="Stops with the richest surrounding urban context."
-            rows={(batchDashboard?.top_stops_by_poi ?? []).slice(0, 10)}
-            columns={[
-              { key: "stop_name", label: "Stop" },
-              { key: "poi_count_within_400m", label: "POIs / 400m", render: (row) => formatNumber(row.poi_count_within_400m) },
-              { key: "food_poi_count_within_400m", label: "Food nearby", render: (row) => formatNumber(row.food_poi_count_within_400m || 0) },
-            ]}
+          <BarChartCard
+            title="Top stops by service intensity"
+            caption="The busiest stops by scheduled stop events in the current city."
+            rows={topActivityStops}
+            labelKey="stop_name"
+            valueKey="trip_count"
+            formatValue={(value) => `${formatCompact(value)} stop events`}
+            color={() => BATCH_ACTIVITY_SCALE[3]}
           />
 
-          <InsightTable
-            title="Most active routes"
-            caption="Routes ranked by total scheduled stop events."
-            rows={(batchDashboard?.top_routes_by_activity ?? []).slice(0, 10)}
-            columns={[
-              { key: "route_short_name", label: "Route", render: (row) => row.route_short_name || row.route_id },
-              { key: "stop_event_count", label: "Stop events", render: (row) => formatNumber(row.stop_event_count) },
-              { key: "distinct_stop_count", label: "Stops", render: (row) => formatNumber(row.distinct_stop_count) },
-            ]}
+          <BarChartCard
+            title="Top stops by neighborhood access"
+            caption="Stops with the strongest nearby mix of destinations and daily essentials."
+            rows={topAmenityStops}
+            labelKey="stop_name"
+            valueKey="poi_count_within_400m"
+            formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.food_poi_count_within_400m || 0)} food`}
+            color={() => BATCH_ACCESS_SCALE[3]}
           />
 
-          <InsightTable
-            title="Routes with the strongest POI reach"
-            caption="Routes whose stop footprint touches the most urban amenities."
-            rows={(batchDashboard?.top_routes_by_poi ?? []).slice(0, 10)}
-            columns={[
-              { key: "route_short_name", label: "Route", render: (row) => row.route_short_name || row.route_id },
-              { key: "total_poi_access", label: "Total POI reach", render: (row) => formatNumber(row.total_poi_access) },
-              { key: "avg_poi_access_per_stop", label: "Avg / stop", render: (row) => Number(row.avg_poi_access_per_stop || 0).toFixed(1) },
-            ]}
+          <BarChartCard
+            title={batchLens === "access" ? "Routes with the strongest neighborhood access" : "Routes with the most service intensity"}
+            caption={batchLens === "access"
+              ? "Which routes touch the richest urban context across their stop footprint."
+              : "Which routes carry the most scheduled stop activity overall."}
+            rows={topRoutesForLens.slice(0, 8)}
+            labelKey="route_short_name"
+            valueKey={batchLens === "access" ? "total_poi_access" : "stop_event_count"}
+            formatLabel={(_, row) => row.route_short_name || row.route_id}
+            formatValue={(value, row) =>
+              batchLens === "access"
+                ? `${formatNumber(value)} amenity touches, ${Number(row.avg_poi_access_per_stop || 0).toFixed(1)} avg per stop`
+                : `${formatCompact(value)} stop events across ${formatNumber(row.distinct_stop_count)} stops`}
+            color={() => batchLens === "access" ? BATCH_ACCESS_SCALE[2] : BATCH_ACTIVITY_SCALE[2]}
+          />
+
+          <DonutBreakdownCard
+            title="Amenity mix around transit"
+            caption="What kinds of nearby places are shaping the batch access story in this city."
+            rows={amenityMix}
+            valueKey="amenity_count"
+            labelForRow={(row) => amenityGroupLabel(row.poi_group)}
+            colorForRow={(row) => AMENITY_GROUP_COLORS[row.poi_group] || AMENITY_GROUP_COLORS.other}
+          />
+
+          <DonutBreakdownCard
+            title="Network mode mix"
+            caption="How the city's modeled routes split across transit modes."
+            rows={routeModeMix}
+            valueKey="route_count"
+            labelForRow={(row) => routeTypeLabel(row.route_type)}
+            colorForRow={(row) => ROUTE_MODE_COLORS[row.route_type] || ROUTE_MODE_COLORS[3]}
           />
 
           <CoverageCard rows={batchDashboard?.road_coverage ?? []} />
@@ -675,40 +960,69 @@ function BatchWorkspace({
           <section className="insight-card route-card">
             <div className="insight-header">
               <h3>Route spotlight</h3>
-              <p>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route to inspect corridor shape and stop context."}</p>
+              <p>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route to inspect corridor shape, service intensity, and nearby destinations."}</p>
             </div>
             {batchRouteLoading ? (
               <div className="status-banner">Loading route corridor…</div>
-            ) : batchRouteDetail?.summary ? (
+            ) : batchRoutePreview?.summary || batchRouteDetail?.summary ? (
               <>
                 <div className="route-summary-grid">
                   <div>
                     <span>Stop events</span>
-                    <strong>{formatCompact(batchRouteDetail.summary.stop_event_count)}</strong>
+                    <strong>{formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)}</strong>
                   </div>
                   <div>
                     <span>Distinct trips</span>
-                    <strong>{formatNumber(batchRouteDetail.summary.distinct_trip_count)}</strong>
+                    <strong>{formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.distinct_trip_count)}</strong>
                   </div>
                   <div>
-                    <span>Total POI reach</span>
-                    <strong>{formatNumber(batchRouteDetail.summary.total_poi_access || 0)}</strong>
+                    <span>Total access score</span>
+                    <strong>{formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)}</strong>
                   </div>
                   <div>
-                    <span>Avg POIs / stop</span>
-                    <strong>{Number(batchRouteDetail.summary.avg_poi_access_per_stop || 0).toFixed(1)}</strong>
+                    <span>Avg amenities / stop</span>
+                    <strong>{Number((batchRouteDetail?.summary || batchRoutePreview?.summary)?.avg_poi_access_per_stop || 0).toFixed(1)}</strong>
                   </div>
                 </div>
+                <p className="route-story-copy">
+                  {selectedRoute
+                    ? `${routeLabel(selectedRoute)} blends ${formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)} scheduled stop events with ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)} nearby amenities across its corridor.`
+                    : "Select a route to read its corridor story."}
+                </p>
+                <RouteSpotlightMap detail={batchRouteDetail || batchRoutePreview} fallbackCity={cityMetadata.find((city) => city.slug === selectedCity) || null} />
+                <div className="route-analytics-grid">
+                  <BarChartCard
+                    title="Busiest stops on this route"
+                    caption="The stops where this route contributes the most scheduled activity."
+                    rows={((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? []).slice(0, 8)}
+                    labelKey="stop_name"
+                    valueKey="trip_count"
+                    formatValue={(value) => `${formatNumber(value)} stop events`}
+                    color={() => BATCH_ACTIVITY_SCALE[3]}
+                  />
+                  <BarChartCard
+                    title="Best access points on this route"
+                    caption="Where this route connects riders to the strongest nearby mix of amenities."
+                    rows={[...((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? [])]
+                      .sort((left, right) => Number(right.poi_count_within_400m || 0) - Number(left.poi_count_within_400m || 0))
+                      .slice(0, 8)}
+                    labelKey="stop_name"
+                    valueKey="poi_count_within_400m"
+                    formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.critical_service_poi_count_within_400m || 0)} essential`}
+                    color={() => BATCH_ACCESS_SCALE[3]}
+                  />
+                </div>
                 <div className="route-stop-list">
-                  {(batchRouteDetail.stops ?? []).slice(0, 8).map((stop) => (
+                  {((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? []).slice(0, 8).map((stop) => (
                     <div className="route-stop-row" key={`${stop.route_id}-${stop.stop_id}`}>
                       <div>
                         <strong>{stop.stop_name}</strong>
                         <span>{formatNumber(stop.trip_count)} stop events</span>
                       </div>
                       <div className="route-stop-badges">
-                        <span>{formatNumber(stop.poi_count_within_400m || 0)} POIs</span>
+                        <span>{formatNumber(stop.poi_count_within_400m || 0)} amenities</span>
                         <span>{formatNumber(stop.food_poi_count_within_400m || 0)} food</span>
+                        <span>{formatNumber(stop.critical_service_poi_count_within_400m || 0)} essential services</span>
                       </div>
                     </div>
                   ))}
@@ -722,7 +1036,7 @@ function BatchWorkspace({
           <section className="insight-card comparison-card-shell">
             <div className="insight-header">
               <h3>Boston vs Chicago</h3>
-              <p>Quick cross-city comparison using the same GTFS + OSM metrics.</p>
+              <p>A side-by-side read on service intensity and neighborhood access using the same batch metrics.</p>
             </div>
             <div className="comparison-shell">
               {(batchComparison?.cities ?? []).map((city) => (
@@ -755,7 +1069,9 @@ function App() {
   const [batchRoutes, setBatchRoutes] = useState([]);
   const [batchDashboardCache, setBatchDashboardCache] = useState({});
   const [batchRoutesCache, setBatchRoutesCache] = useState({});
+  const [batchRoutePreviewCache, setBatchRoutePreviewCache] = useState({});
   const [batchRouteDetailCache, setBatchRouteDetailCache] = useState({});
+  const [batchBootstrapLoaded, setBatchBootstrapLoaded] = useState(false);
   const [selectedBatchRouteId, setSelectedBatchRouteId] = useState("");
   const [batchRouteDetail, setBatchRouteDetail] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
@@ -779,17 +1095,106 @@ function App() {
         liveResponse.json(),
         batchResponse.json(),
       ]);
+
       startTransition(() => {
         setCities(livePayload);
-        setBatchCities(batchPayload);
+        setBatchCities(batchPayload || []);
+        setBatchBootstrapLoaded(true);
       });
     }
 
     loadCities().catch((error) => {
-      setErrorMessage(error.message);
-      setBatchError(error.message);
-    });
+        setErrorMessage(error.message);
+        setBatchError(error.message);
+        setBatchBootstrapLoaded(true);
+      });
   }, []);
+
+  useEffect(() => {
+    if (batchCities.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function warmBatchCaches() {
+      const cityTargets = [selectedCity, ...batchCities.map((city) => city.slug)].filter(
+        (value, index, array) => value && array.indexOf(value) === index,
+      );
+
+      const comparisonPromise = batchComparison
+        ? Promise.resolve(batchComparison)
+        : fetch(`${API_BASE_URL}/api/batch/comparison`).then((response) => {
+            if (!response.ok) {
+              throw new Error("Unable to load city comparison");
+            }
+            return response.json();
+          });
+
+      const comparisonPayload = await comparisonPromise;
+      const cityPayloads = await Promise.all(
+        cityTargets.map(async (citySlug) => {
+          const dashboardPromise = batchDashboardCache[citySlug]
+            ? Promise.resolve(batchDashboardCache[citySlug])
+            : fetch(`${API_BASE_URL}/api/batch/${citySlug}/dashboard`).then((response) => {
+                if (!response.ok) {
+                  throw new Error(`Unable to load batch dashboard for ${citySlug}`);
+                }
+                return response.json();
+              });
+          const routesPromise = batchRoutesCache[citySlug]
+            ? Promise.resolve({ routes: batchRoutesCache[citySlug] })
+            : fetch(`${API_BASE_URL}/api/batch/${citySlug}/routes?limit=500`).then((response) => {
+                if (!response.ok) {
+                  throw new Error(`Unable to load route catalog for ${citySlug}`);
+                }
+                return response.json();
+              });
+
+          const [dashboardPayload, routesPayload] = await Promise.all([dashboardPromise, routesPromise]);
+          return {
+            citySlug,
+            dashboardPayload,
+            routesPayload: routesPayload.routes,
+          };
+        }),
+      );
+
+      if (!cancelled) {
+        const nextDashboardCache = {};
+        const nextRoutesCache = {};
+        cityPayloads.forEach(({ citySlug, dashboardPayload, routesPayload }) => {
+          nextDashboardCache[citySlug] = dashboardPayload;
+          nextRoutesCache[citySlug] = routesPayload;
+        });
+
+        startTransition(() => {
+          setBatchComparison(comparisonPayload);
+          setBatchDashboardCache((current) => ({ ...current, ...nextDashboardCache }));
+          setBatchRoutesCache((current) => ({ ...current, ...nextRoutesCache }));
+
+          const selectedDashboard = nextDashboardCache[selectedCity] || batchDashboardCache[selectedCity];
+          const selectedRoutes = nextRoutesCache[selectedCity] || batchRoutesCache[selectedCity] || [];
+          if (selectedDashboard) {
+            setBatchDashboard(selectedDashboard);
+          }
+          setBatchRoutes(selectedRoutes);
+          setSelectedBatchRouteId((current) => {
+            if (current && selectedRoutes.some((route) => route.route_id === current)) {
+              return current;
+            }
+            return selectedRoutes[0]?.route_id || "";
+          });
+        });
+      }
+    }
+
+    warmBatchCaches().catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [batchCities]);
 
   useEffect(() => {
     const cityConfig = cities.find((city) => city.slug === selectedCity);
@@ -802,6 +1207,57 @@ function App() {
       batchCities.find((city) => city.slug === selectedCity);
     setBatchMapViewState(cityViewState(cityConfig));
   }, [selectedCity, cities, batchCities]);
+
+  useEffect(() => {
+    if (mode !== "batch" || !selectedBatchRouteId) {
+      return;
+    }
+
+    const cityConfig = cities.find((city) => city.slug === selectedCity) || null;
+    const activeRouteDetail =
+      batchRouteDetailCache[`${selectedCity}:${selectedBatchRouteId}`] ||
+      batchRoutePreviewCache[selectedCity]?.[selectedBatchRouteId] ||
+      batchRouteDetail;
+
+    if (!activeRouteDetail) {
+      return;
+    }
+
+    startTransition(() => {
+      setBatchMapViewState(routeViewStateFromDetail(activeRouteDetail, cityConfig));
+    });
+  }, [mode, selectedCity, selectedBatchRouteId, batchRouteDetail, batchRouteDetailCache, batchRoutePreviewCache, cities]);
+
+  useEffect(() => {
+    const cachedDashboard = batchDashboardCache[selectedCity];
+    const cachedRoutes = batchRoutesCache[selectedCity];
+    const routePreviewCache = batchRoutePreviewCache[selectedCity] || {};
+    if (!cachedDashboard && !cachedRoutes) {
+      return;
+    }
+
+    startTransition(() => {
+      if (cachedDashboard) {
+        setBatchDashboard(cachedDashboard);
+      }
+      if (cachedRoutes) {
+        setBatchRoutes(cachedRoutes);
+        setSelectedBatchRouteId((current) => {
+          if (current && cachedRoutes.some((route) => route.route_id === current)) {
+            return current;
+          }
+          return cachedRoutes[0]?.route_id || "";
+        });
+        setBatchRouteDetail((current) => {
+          const activeRouteId =
+            (current?.summary?.route_id && cachedRoutes.some((route) => route.route_id === current.summary.route_id))
+              ? current.summary.route_id
+              : cachedRoutes[0]?.route_id;
+          return activeRouteId ? routePreviewCache[activeRouteId] || current : current;
+        });
+      }
+    });
+  }, [selectedCity, batchDashboardCache, batchRoutesCache, batchRoutePreviewCache]);
 
   useEffect(() => {
     if (mode !== "live") {
@@ -881,7 +1337,7 @@ function App() {
   }, [mode, selectedCity]);
 
   useEffect(() => {
-    if (mode !== "batch") {
+    if (!batchBootstrapLoaded) {
       return undefined;
     }
 
@@ -909,7 +1365,7 @@ function App() {
         return;
       }
 
-      setBatchLoading(true);
+      setBatchLoading(mode === "batch");
       setBatchError("");
       const [dashboardPayload, routesPayload, comparisonPayload] = await Promise.all([
         needsDashboard
@@ -976,18 +1432,26 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedCity]);
+  }, [batchBootstrapLoaded, mode, selectedCity, batchComparison, batchDashboardCache, batchRoutesCache]);
 
   useEffect(() => {
-    if (mode !== "batch" || !selectedBatchRouteId) {
+    if (!selectedBatchRouteId) {
       return undefined;
     }
 
     let cancelled = false;
     const routeCacheKey = `${selectedCity}:${selectedBatchRouteId}`;
+    const previewRouteDetail = batchRoutePreviewCache[selectedCity]?.[selectedBatchRouteId];
     const cachedRouteDetail = batchRouteDetailCache[routeCacheKey];
 
-    if (cachedRouteDetail) {
+    if (previewRouteDetail) {
+      startTransition(() => {
+        setBatchRouteDetail(previewRouteDetail);
+        setBatchError("");
+      });
+    }
+
+    if (cachedRouteDetail && !cachedRouteDetail.is_preview) {
       startTransition(() => {
         setBatchRouteDetail(cachedRouteDetail);
         setBatchError("");
@@ -997,7 +1461,6 @@ function App() {
 
     async function loadRouteDetail() {
       setBatchRouteLoading(true);
-      setBatchRouteDetail(null);
       const response = await fetch(`${API_BASE_URL}/api/batch/${selectedCity}/routes/${selectedBatchRouteId}`);
       if (!response.ok) {
         throw new Error("Unable to load route detail");
@@ -1026,7 +1489,60 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [mode, selectedCity, selectedBatchRouteId, batchRouteDetailCache]);
+  }, [selectedCity, selectedBatchRouteId, batchRouteDetailCache, batchRoutePreviewCache]);
+
+  useEffect(() => {
+    if (!batchBootstrapLoaded) {
+      return undefined;
+    }
+
+    const prefetchTargets = Object.entries(batchRoutesCache).flatMap(([citySlug, routes]) =>
+      (routes || [])
+        .slice(0, 4)
+        .map((route) => ({ citySlug, routeId: route.route_id }))
+        .filter(({ citySlug: routeCity, routeId }) => !batchRouteDetailCache[`${routeCity}:${routeId}`]),
+    );
+
+    if (prefetchTargets.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function prefetchRouteDetails() {
+      const settled = await Promise.all(
+        prefetchTargets.map(async ({ citySlug, routeId }) => {
+          const response = await fetch(`${API_BASE_URL}/api/batch/${citySlug}/routes/${routeId}`);
+          if (!response.ok) {
+            return null;
+          }
+          const payload = await response.json();
+          return { citySlug, routeId, payload };
+        }),
+      );
+
+      if (!cancelled) {
+        const nextCacheEntries = {};
+        settled.forEach((item) => {
+          if (!item) {
+            return;
+          }
+          nextCacheEntries[`${item.citySlug}:${item.routeId}`] = item.payload;
+        });
+        if (Object.keys(nextCacheEntries).length > 0) {
+          startTransition(() => {
+            setBatchRouteDetailCache((current) => ({ ...current, ...nextCacheEntries }));
+          });
+        }
+      }
+    }
+
+    prefetchRouteDetails().catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [batchBootstrapLoaded, batchRoutesCache, batchRouteDetailCache]);
 
   const vehicles = Object.values(vehicleMap);
   const batchHeroCity = batchCities.find((city) => city.slug === selectedCity) || cities.find((city) => city.slug === selectedCity);
@@ -1054,8 +1570,8 @@ function App() {
             ? connectionState === "live"
               ? "Live stream connected"
               : connectionState
-            : batchLoading
-              ? "Refreshing warehouse snapshot"
+            : !batchBootstrapLoaded || batchLoading
+              ? "Staging batch snapshot"
               : "Batch snapshot ready"}
         </div>
       </section>
@@ -1077,6 +1593,7 @@ function App() {
       ) : (
         <BatchWorkspace
           cities={batchCities}
+          cityMetadata={cities}
           selectedCity={selectedCity}
           setSelectedCity={setSelectedCity}
           batchLens={batchLens}
@@ -1087,6 +1604,7 @@ function App() {
           selectedBatchRouteId={selectedBatchRouteId}
           setSelectedBatchRouteId={setSelectedBatchRouteId}
           batchRouteDetail={batchRouteDetail}
+          batchRoutePreview={batchRoutePreviewCache[selectedCity]?.[selectedBatchRouteId] || null}
           batchLoading={batchLoading}
           batchRouteLoading={batchRouteLoading}
           batchError={batchError}

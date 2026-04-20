@@ -79,6 +79,61 @@ class BatchServiceTests(unittest.TestCase):
         self.assertEqual(fake_cursor.execute_calls, 1)
         self.assertEqual(first, second)
 
+    def test_get_bootstrap_snapshot_includes_city_snapshots_and_route_previews(self) -> None:
+        service = SnowflakeBatchService(cache_ttl_seconds=3600)
+
+        with patch.object(service, "get_city_comparison", return_value={"cities": [{"city": "boston"}, {"city": "chicago"}]}):
+            with patch.object(
+                service,
+                "get_city_snapshot",
+                side_effect=[
+                    {
+                        "city": "boston",
+                        "dashboard": {"overview": {"total_stops": 1}},
+                        "routes": [{"route_id": "1"}],
+                        "featured_route_detail": {"summary": {"route_id": "1"}},
+                    },
+                    {
+                        "city": "chicago",
+                        "dashboard": {"overview": {"total_stops": 2}},
+                        "routes": [{"route_id": "2"}],
+                        "featured_route_detail": {"summary": {"route_id": "2"}},
+                    },
+                ],
+            ):
+                snapshot = service.get_bootstrap_snapshot()
+
+        self.assertIn("snapshots", snapshot)
+        self.assertIn("boston", snapshot["snapshots"])
+        self.assertIn("chicago", snapshot["snapshots"])
+        self.assertIn("boston:1", snapshot["route_previews"])
+        self.assertIn("chicago:2", snapshot["route_previews"])
+        self.assertEqual(snapshot["comparison"]["cities"][0]["city"], "boston")
+
+    def test_get_route_preview_catalog_groups_top_stops_per_route(self) -> None:
+        service = SnowflakeBatchService(cache_ttl_seconds=3600)
+
+        summary_rows = [
+            {"route_id": "1", "route_short_name": "1", "stop_event_count": 100},
+            {"route_id": "2", "route_short_name": "2", "stop_event_count": 50},
+        ]
+        stop_rows = [
+            {"route_id": "1", "stop_id": "a", "stop_name": "Alpha", "trip_count": 30},
+            {"route_id": "1", "stop_id": "b", "stop_name": "Bravo", "trip_count": 20},
+            {"route_id": "1", "stop_id": "c", "stop_name": "Charlie", "trip_count": 10},
+            {"route_id": "2", "stop_id": "d", "stop_name": "Delta", "trip_count": 25},
+        ]
+
+        with patch.object(service, "_query_records", side_effect=[summary_rows, stop_rows]):
+            preview_catalog = service.get_route_preview_catalog("boston", stop_limit=2)
+
+        self.assertIn("1", preview_catalog)
+        self.assertIn("2", preview_catalog)
+        self.assertTrue(preview_catalog["1"]["is_preview"])
+        self.assertEqual(len(preview_catalog["1"]["stops"]), 2)
+        self.assertEqual(preview_catalog["1"]["stops"][0]["stop_name"], "Alpha")
+        self.assertEqual(preview_catalog["2"]["stops"][0]["stop_name"], "Delta")
+
 
 if __name__ == "__main__":
     unittest.main()

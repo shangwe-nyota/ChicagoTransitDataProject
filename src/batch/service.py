@@ -38,6 +38,71 @@ class SnowflakeBatchService:
             )
         return cities
 
+    def prewarm_bootstrap_snapshot(
+        self,
+        stop_limit: int = 200,
+        route_limit: int = 25,
+        route_catalog_limit: int = 500,
+    ) -> dict[str, Any]:
+        return self.get_bootstrap_snapshot(
+            stop_limit=stop_limit,
+            route_limit=route_limit,
+            route_catalog_limit=route_catalog_limit,
+        )
+
+    def get_bootstrap_snapshot(
+        self,
+        stop_limit: int = 200,
+        route_limit: int = 25,
+        route_catalog_limit: int = 500,
+    ) -> dict[str, Any]:
+        snapshots: dict[str, dict[str, Any]] = {}
+        route_previews: dict[str, dict[str, Any]] = {}
+
+        for city_slug in sorted(BATCH_CITY_CONFIGS.keys()):
+            city_snapshot = self.get_city_snapshot(
+                city_slug,
+                stop_limit=stop_limit,
+                route_limit=route_limit,
+                route_catalog_limit=route_catalog_limit,
+            )
+            snapshots[city_slug] = city_snapshot
+            if city_snapshot.get("featured_route_detail"):
+                route_summary = city_snapshot["featured_route_detail"].get("summary")
+                if route_summary and route_summary.get("route_id"):
+                    route_key = f"{city_slug}:{route_summary['route_id']}"
+                    route_previews[route_key] = city_snapshot["featured_route_detail"]
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "cities": self.list_batch_cities(),
+            "comparison": self.get_city_comparison(),
+            "snapshots": snapshots,
+            "route_previews": route_previews,
+        }
+
+    def get_city_snapshot(
+        self,
+        city: str,
+        stop_limit: int = 200,
+        route_limit: int = 25,
+        route_catalog_limit: int = 500,
+    ) -> dict[str, Any]:
+        city_slug = get_batch_city_config(city).slug
+        dashboard = self.get_city_dashboard(city_slug, stop_limit=stop_limit, route_limit=route_limit)
+        routes = self.list_routes(city_slug, limit=route_catalog_limit)
+        route_previews = self.get_route_preview_catalog(city_slug)
+        featured_route_detail = None
+        if routes:
+            featured_route_detail = self.get_route_detail(city_slug, routes[0]["route_id"])
+        return {
+            "city": city_slug,
+            "dashboard": dashboard,
+            "routes": routes,
+            "route_previews": route_previews,
+            "featured_route_detail": featured_route_detail,
+        }
+
     def get_city_dashboard(self, city: str, stop_limit: int = 200, route_limit: int = 25) -> dict[str, Any]:
         city_slug = get_batch_city_config(city).slug
         overview = self._get_overview(city_slug)
@@ -146,6 +211,33 @@ class SnowflakeBatchService:
             """,
             cache_key=f"dashboard:{city_slug}:road_coverage",
         )
+        amenity_mix = self._query_records(
+            f"""
+            SELECT
+                city,
+                poi_group,
+                COUNT(*) AS amenity_count
+            FROM CHICAGO_TRANSIT.BATCH_OSM_POIS
+            WHERE city = {self._sql_string(city_slug)}
+            GROUP BY city, poi_group
+            ORDER BY amenity_count DESC, poi_group ASC
+            """,
+            cache_key=f"dashboard:{city_slug}:amenity_mix",
+        )
+        route_mode_mix = self._query_records(
+            f"""
+            SELECT
+                city,
+                route_type,
+                COUNT(*) AS route_count,
+                COALESCE(SUM(stop_event_count), 0) AS stop_event_count
+            FROM CHICAGO_TRANSIT.BATCH_ROUTE_ACTIVITY
+            WHERE city = {self._sql_string(city_slug)}
+            GROUP BY city, route_type
+            ORDER BY stop_event_count DESC, route_type ASC
+            """,
+            cache_key=f"dashboard:{city_slug}:route_mode_mix",
+        )
 
         return {
             "city": city_slug,
@@ -156,6 +248,8 @@ class SnowflakeBatchService:
             "top_routes_by_activity": top_routes_activity,
             "top_routes_by_poi": top_routes_poi,
             "road_coverage": road_coverage,
+            "amenity_mix": amenity_mix,
+            "route_mode_mix": route_mode_mix,
         }
 
     def list_routes(self, city: str, limit: int = 500) -> list[dict[str, Any]]:
@@ -181,7 +275,46 @@ class SnowflakeBatchService:
 
     def get_route_detail(self, city: str, route_id: str, stop_limit: int = 80) -> dict[str, Any]:
         city_slug = get_batch_city_config(city).slug
+        route_preview_catalog = self.get_route_preview_catalog(city_slug, stop_limit=stop_limit)
+        preview = route_preview_catalog.get(route_id)
+        if preview is None:
+            raise KeyError(f"Unsupported or missing route: {route_id}")
+
         route_key = self._sql_string(route_id)
+        shape_rows = self._query_records(
+            f"""
+            SELECT
+                city,
+                route_id,
+                shape_id,
+                shape_pt_sequence,
+                shape_pt_lat,
+                shape_pt_lon
+            FROM CHICAGO_TRANSIT.BATCH_ROUTE_SHAPES
+            WHERE city = {self._sql_string(city_slug)}
+              AND route_id = {route_key}
+            ORDER BY shape_id, shape_pt_sequence
+            """,
+            cache_key=f"route_detail:{city_slug}:{route_id}:shapes",
+        )
+        paths = self._group_paths(shape_rows)
+        return {
+            "city": city_slug,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": preview["summary"],
+            "stops": preview["stops"],
+            "paths": paths,
+            "is_preview": False,
+        }
+
+    def get_route_preview_catalog(self, city: str, stop_limit: int = 12) -> dict[str, dict[str, Any]]:
+        city_slug = get_batch_city_config(city).slug
+        cache_key = f"route_preview_catalog:{city_slug}:{int(stop_limit)}"
+        cached = self._cache.get(cache_key)
+        now = time.time()
+        if cached and now - cached.created_at < self.cache_ttl_seconds:
+            return cached.payload
+
         summary_rows = self._query_records(
             f"""
             SELECT
@@ -204,10 +337,9 @@ class SnowflakeBatchService:
             LEFT JOIN CHICAGO_TRANSIT.BATCH_ROUTE_POI_ACCESS rp
               ON ra.city = rp.city AND ra.route_id = rp.route_id
             WHERE ra.city = {self._sql_string(city_slug)}
-              AND ra.route_id = {route_key}
-            LIMIT 1
+            ORDER BY ra.stop_event_count DESC, ra.route_id ASC
             """,
-            cache_key=f"route_detail:{city_slug}:{route_id}:summary",
+            cache_key=f"route_preview_summary:{city_slug}",
         )
         stop_rows = self._query_records(
             f"""
@@ -230,39 +362,33 @@ class SnowflakeBatchService:
             LEFT JOIN CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS spa
               ON sar.city = spa.city AND sar.stop_id = spa.stop_id
             WHERE sar.city = {self._sql_string(city_slug)}
-              AND sar.route_id = {route_key}
-            ORDER BY sar.trip_count DESC, spa.poi_count_within_400m DESC
-            LIMIT {int(stop_limit)}
+            ORDER BY sar.route_id ASC, sar.trip_count DESC, spa.poi_count_within_400m DESC
             """,
-            cache_key=f"route_detail:{city_slug}:{route_id}:stops:{stop_limit}",
+            cache_key=f"route_preview_stops:{city_slug}",
         )
-        shape_rows = self._query_records(
-            f"""
-            SELECT
-                city,
-                route_id,
-                shape_id,
-                shape_pt_sequence,
-                shape_pt_lat,
-                shape_pt_lon
-            FROM CHICAGO_TRANSIT.BATCH_ROUTE_SHAPES
-            WHERE city = {self._sql_string(city_slug)}
-              AND route_id = {route_key}
-            ORDER BY shape_id, shape_pt_sequence
-            """,
-            cache_key=f"route_detail:{city_slug}:{route_id}:shapes",
-        )
-        paths = self._group_paths(shape_rows)
-        summary = summary_rows[0] if summary_rows else None
-        if summary is None:
-            raise KeyError(f"Unsupported or missing route: {route_id}")
-        return {
-            "city": city_slug,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "summary": summary,
-            "stops": stop_rows,
-            "paths": paths,
-        }
+
+        stops_by_route: dict[str, list[dict[str, Any]]] = {}
+        for row in stop_rows:
+            route_id = row["route_id"]
+            current = stops_by_route.setdefault(route_id, [])
+            if len(current) < int(stop_limit):
+                current.append(row)
+
+        previews: dict[str, dict[str, Any]] = {}
+        generated_at = datetime.now(timezone.utc).isoformat()
+        for summary in summary_rows:
+            route_id = summary["route_id"]
+            previews[route_id] = {
+                "city": city_slug,
+                "generated_at": generated_at,
+                "summary": summary,
+                "stops": stops_by_route.get(route_id, []),
+                "paths": [],
+                "is_preview": True,
+            }
+
+        self._cache[cache_key] = CacheEntry(created_at=now, payload=previews)
+        return previews
 
     def get_city_comparison(self) -> dict[str, Any]:
         cities = sorted(BATCH_CITY_CONFIGS.keys())
