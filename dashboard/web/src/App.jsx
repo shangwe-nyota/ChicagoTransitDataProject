@@ -1,9 +1,11 @@
-import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
+import { Component, startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { Map } from "react-map-gl/maplibre";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+const NativeMap = globalThis.Map;
 
 const API_BASE_URL = import.meta.env.VITE_LIVE_API_URL || "http://127.0.0.1:8000";
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json";
@@ -148,12 +150,18 @@ function cityViewState(city) {
   };
 }
 
+function hasFiniteCoordinates(lon, lat) {
+  return Number.isFinite(Number(lon)) && Number.isFinite(Number(lat));
+}
+
 function routeViewStateFromDetail(detail, fallbackCity) {
   const stopPoints = (detail?.stops ?? [])
-    .filter((stop) => Number.isFinite(stop.stop_lat) && Number.isFinite(stop.stop_lon))
+    .filter((stop) => hasFiniteCoordinates(stop.stop_lon, stop.stop_lat))
     .map((stop) => [Number(stop.stop_lon), Number(stop.stop_lat)]);
 
-  const pathPoints = (detail?.paths ?? []).flatMap((path) => path.path || []);
+  const pathPoints = (detail?.paths ?? []).flatMap((path) =>
+    (path.path || []).filter((point) => Array.isArray(point) && hasFiniteCoordinates(point[0], point[1])),
+  );
   const allPoints = [...pathPoints, ...stopPoints].filter(
     (point) => Array.isArray(point) && Number.isFinite(point[0]) && Number.isFinite(point[1]),
   );
@@ -332,7 +340,7 @@ function rowValue(row, lens) {
 }
 
 function summarizeRouteStopsForDisplay(stops) {
-  const grouped = new Map();
+  const grouped = new NativeMap();
 
   for (const stop of stops ?? []) {
     const key = stop.stop_name || stop.stop_id;
@@ -397,6 +405,64 @@ function ModeToggle({ mode, setMode }) {
       </button>
     </div>
   );
+}
+
+class BatchRenderBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorMessage: "" };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    console.error("Batch Atlas render failed", error);
+    this.setState({ errorMessage: error?.message || String(error) });
+  }
+
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, errorMessage: "" });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      const fallbackTitle = this.props.title || "Batch Atlas hit a rendering issue";
+      const fallbackMessage = this.props.message || "The batch data loaded, but one of the visual components failed while rendering.";
+      const errorDetail = this.state.errorMessage || "Unknown rendering error";
+      return (
+        <section className={this.props.inline ? "insight-card boundary-inline-card" : "workspace batch-workspace"}>
+          {this.props.inline ? (
+            <div className="insight-header">
+              <h3>{fallbackTitle}</h3>
+              <p>{fallbackMessage}</p>
+            </div>
+          ) : (
+            <aside className="control-panel">
+              <div className="panel-block">
+                <h2>{fallbackTitle}</h2>
+                <div className="error-banner">{fallbackMessage}</div>
+              </div>
+            </aside>
+          )}
+          <main className={this.props.inline ? "" : "map-panel"}>
+            <section className="insight-card">
+              <div className="insight-header">
+                <h3>Safe recovery</h3>
+                <p>{this.props.inline ? "This panel failed, but the rest of the atlas can still render." : "The rest of the app is still running. Use the city and route controls again after this view resets."}</p>
+              </div>
+              <div className="error-banner">{errorDetail}</div>
+            </section>
+          </main>
+        </section>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 function StatCard({ label, value, accent = "" }) {
@@ -494,10 +560,17 @@ function DonutBreakdownCard({ title, caption, rows, valueKey, labelForRow, color
 }
 
 function RouteSpotlightMap({ detail, fallbackCity, theme }) {
+  const validPaths = (detail?.paths ?? [])
+    .map((path) => ({
+      ...path,
+      path: (path.path || []).filter((point) => Array.isArray(point) && hasFiniteCoordinates(point[0], point[1])),
+    }))
+    .filter((path) => path.path.length >= 2);
+  const validStops = (detail?.stops ?? []).filter((row) => hasFiniteCoordinates(row.stop_lon, row.stop_lat));
   const routeMapViewState = routeViewStateFromDetail(detail, fallbackCity);
   const haloLayer = new PathLayer({
     id: "route-spotlight-halo",
-    data: detail?.paths ?? [],
+    data: validPaths,
     getPath: (row) => row.path,
     getColor: theme.pathHalo,
     getWidth: 10,
@@ -508,7 +581,7 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
   });
   const pathLayer = new PathLayer({
     id: "route-spotlight-paths",
-    data: detail?.paths ?? [],
+    data: validPaths,
     getPath: (row) => row.path,
     getColor: theme.path,
     getWidth: 6.5,
@@ -518,8 +591,8 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
   });
   const stopLayer = new ScatterplotLayer({
     id: "route-spotlight-stops",
-    data: detail?.stops ?? [],
-    getPosition: (row) => [row.stop_lon, row.stop_lat],
+    data: validStops,
+    getPosition: (row) => [Number(row.stop_lon), Number(row.stop_lat)],
     getFillColor: (row) => (row.poi_count_within_400m ? theme.stopFill : theme.pathHalo),
     getLineColor: theme.stopStroke,
     getRadius: (row) => Math.max(50, Math.min(140, 32 + Math.sqrt(Number(row.trip_count || 0)) * 4)),
@@ -823,6 +896,11 @@ function BatchWorkspace({
   setBatchMapViewState,
 }) {
   const routeStopsForDisplay = summarizeRouteStopsForDisplay(batchRouteDetail?.stops ?? batchRoutePreview?.stops ?? []);
+  const validTopStopsForLens = (
+    batchLens === "access"
+      ? batchDashboard?.top_stops_by_poi ?? []
+      : batchDashboard?.top_stops_by_activity ?? []
+  ).filter((row) => hasFiniteCoordinates(row.stop_lon, row.stop_lat));
   const topStopsForLens =
     batchLens === "access"
       ? batchDashboard?.top_stops_by_poi ?? []
@@ -850,10 +928,19 @@ function BatchWorkspace({
           { color: BATCH_ACTIVITY_SCALE[3], label: "Network hotspot", description: "The highest service concentration in the city." },
         ];
   const lensMaxValue = topStopsForLens.reduce((currentMax, row) => Math.max(currentMax, rowValue(row, batchLens)), 0);
+  const validRouteStops = (batchRoutePreview?.stops ?? batchRouteDetail?.stops ?? []).filter((row) =>
+    hasFiniteCoordinates(row.stop_lon, row.stop_lat),
+  );
+  const validRoutePaths = (batchRouteDetail?.paths ?? [])
+    .map((path) => ({
+      ...path,
+      path: (path.path || []).filter((point) => Array.isArray(point) && hasFiniteCoordinates(point[0], point[1])),
+    }))
+    .filter((path) => path.path.length >= 2);
   const batchLayer = new ScatterplotLayer({
     id: "batch-stops",
-    data: topStopsForLens.slice(0, 250),
-    getPosition: (row) => [row.stop_lon, row.stop_lat],
+    data: validTopStopsForLens.slice(0, 250),
+    getPosition: (row) => [Number(row.stop_lon), Number(row.stop_lat)],
     getFillColor: (row) => batchStopColor(row, batchLens, lensMaxValue),
     getLineColor: [10, 20, 30, 150],
     getRadius: (row) => batchStopRadius(row, batchLens, lensMaxValue),
@@ -866,8 +953,8 @@ function BatchWorkspace({
   });
   const routeStopLayer = new ScatterplotLayer({
     id: "route-stops",
-    data: batchRoutePreview?.stops ?? batchRouteDetail?.stops ?? [],
-    getPosition: (row) => [row.stop_lon, row.stop_lat],
+    data: validRouteStops,
+    getPosition: (row) => [Number(row.stop_lon), Number(row.stop_lat)],
     getFillColor: [248, 250, 252, 180],
     getLineColor: [15, 23, 42, 255],
     getRadius: 54,
@@ -879,7 +966,7 @@ function BatchWorkspace({
   });
   const routePathLayer = new PathLayer({
     id: "route-paths",
-    data: batchRouteDetail?.paths ?? [],
+    data: validRoutePaths,
     getPath: (row) => row.path,
     getColor: [255, 196, 61, 220],
     getWidth: 5,
@@ -890,10 +977,10 @@ function BatchWorkspace({
 
   const selectedRoute = batchRoutes.find((route) => route.route_id === selectedBatchRouteId) ?? null;
   const mapLayers = selectedRoute ? [] : [batchLayer];
-  if ((batchRouteDetail?.paths ?? []).length > 0) {
+  if (validRoutePaths.length > 0) {
     mapLayers.push(routePathLayer);
   }
-  if (((batchRoutePreview?.stops ?? batchRouteDetail?.stops) ?? []).length > 0) {
+  if (validRouteStops.length > 0) {
     mapLayers.push(routeStopLayer);
   }
 
@@ -991,49 +1078,56 @@ function BatchWorkspace({
       </aside>
 
       <main className="map-panel">
-        <div className="map-frame batch-frame">
-          <DeckGL
-            viewState={batchMapViewState}
-            onViewStateChange={({ viewState }) => setBatchMapViewState(viewState)}
-            controller={true}
-            layers={mapLayers}
-            getTooltip={({ object }) =>
-              object
-                ? {
-                    html: `
-                      <div class="tooltip-title">${object.stop_name || object.route_long_name || object.shape_id || "Batch feature"}</div>
-                      ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
-                      ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
-                      ${object.food_poi_count_within_400m ? `<div>Food access: ${formatNumber(object.food_poi_count_within_400m)}</div>` : ""}
-                    `,
-                  }
-                : null
-            }
-          >
-            <Map reuseMaps={true} mapLib={maplibregl} mapStyle={MAP_STYLE} attributionControl={true} />
-          </DeckGL>
-          <div className="map-overlay-card">
-            <p className="eyebrow">Snowflake-backed batch atlas</p>
-            <h2>{batchLensTitle(batchLens)}</h2>
-            <p>
-              {selectedRoute
-                ? `${batchLensDescription(batchLens)} The highlighted corridor shows how ${routeLabel(selectedRoute)} threads through that urban context.`
-                : batchLensDescription(batchLens)}
-            </p>
-            <div className="map-meta">
-              <span>Batch refresh</span>
-              <strong>{formatTime(batchDashboard?.generated_at)}</strong>
-            </div>
-            <div className="map-meta">
-              <span>Current route spotlight</span>
-              <strong>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route"}</strong>
-            </div>
-            <div className="map-meta">
-              <span>City framing</span>
-              <strong>{selectedCity === "boston" ? "Rail corridors + access" : "Grid routes + everyday access"}</strong>
+        <BatchRenderBoundary
+          inline={true}
+          resetKey={`main-map:${selectedCity}:${selectedBatchRouteId}:${batchLens}`}
+          title="Batch map failed to render"
+          message="The citywide batch map hit a rendering issue, but the rest of the atlas is still available below."
+        >
+          <div className="map-frame batch-frame">
+            <DeckGL
+              viewState={batchMapViewState}
+              onViewStateChange={({ viewState }) => setBatchMapViewState(viewState)}
+              controller={true}
+              layers={mapLayers}
+              getTooltip={({ object }) =>
+                object
+                  ? {
+                      html: `
+                        <div class="tooltip-title">${object.stop_name || object.route_long_name || object.shape_id || "Batch feature"}</div>
+                        ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
+                        ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
+                        ${object.food_poi_count_within_400m ? `<div>Food access: ${formatNumber(object.food_poi_count_within_400m)}</div>` : ""}
+                      `,
+                    }
+                  : null
+              }
+            >
+              <Map reuseMaps={true} mapLib={maplibregl} mapStyle={MAP_STYLE} attributionControl={true} />
+            </DeckGL>
+            <div className="map-overlay-card">
+              <p className="eyebrow">Snowflake-backed batch atlas</p>
+              <h2>{batchLensTitle(batchLens)}</h2>
+              <p>
+                {selectedRoute
+                  ? `${batchLensDescription(batchLens)} The highlighted corridor shows how ${routeLabel(selectedRoute)} threads through that urban context.`
+                  : batchLensDescription(batchLens)}
+              </p>
+              <div className="map-meta">
+                <span>Batch refresh</span>
+                <strong>{formatTime(batchDashboard?.generated_at)}</strong>
+              </div>
+              <div className="map-meta">
+                <span>Current route spotlight</span>
+                <strong>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route"}</strong>
+              </div>
+              <div className="map-meta">
+                <span>City framing</span>
+                <strong>{selectedCity === "boston" ? "Rail corridors + access" : "Grid routes + everyday access"}</strong>
+              </div>
             </div>
           </div>
-        </div>
+        </BatchRenderBoundary>
 
         <div className="insight-grid">
           <LegendCard
@@ -1133,7 +1227,14 @@ function BatchWorkspace({
                     ? `${routeLabel(selectedRoute)} blends ${formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)} scheduled stop events with ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)} nearby amenities across its corridor.`
                     : "Select a route to read its corridor story."}
                 </p>
-                <RouteSpotlightMap detail={batchRouteDetail || batchRoutePreview} fallbackCity={cityMetadata.find((city) => city.slug === selectedCity) || null} theme={cityTheme} />
+                <BatchRenderBoundary
+                  inline={true}
+                  resetKey={`route-map:${selectedCity}:${selectedBatchRouteId}`}
+                  title="Route spotlight map failed"
+                  message="The route corridor map hit a rendering issue, but the route metrics below are still available."
+                >
+                  <RouteSpotlightMap detail={batchRouteDetail || batchRoutePreview} fallbackCity={cityMetadata.find((city) => city.slug === selectedCity) || null} theme={cityTheme} />
+                </BatchRenderBoundary>
                 <div className="route-analytics-grid">
                   <BarChartCard
                     title="Busiest stops on this route"
@@ -1333,12 +1434,9 @@ function App() {
             setBatchDashboard(selectedDashboard);
           }
           setBatchRoutes(selectedRoutes);
-          setSelectedBatchRouteId((current) => {
-            if (current && selectedRoutes.some((route) => route.route_id === current)) {
-              return current;
-            }
-            return selectedRoutes[0]?.route_id || "";
-          });
+          setSelectedBatchRouteId((current) =>
+            current && selectedRoutes.some((route) => route.route_id === current) ? current : "",
+          );
         });
       }
     }
@@ -1396,17 +1494,14 @@ function App() {
       }
       if (cachedRoutes) {
         setBatchRoutes(cachedRoutes);
-        setSelectedBatchRouteId((current) => {
-          if (current && cachedRoutes.some((route) => route.route_id === current)) {
-            return current;
-          }
-          return cachedRoutes[0]?.route_id || "";
-        });
+        setSelectedBatchRouteId((current) =>
+          current && cachedRoutes.some((route) => route.route_id === current) ? current : "",
+        );
         setBatchRouteDetail((current) => {
           const activeRouteId =
             (current?.summary?.route_id && cachedRoutes.some((route) => route.route_id === current.summary.route_id))
               ? current.summary.route_id
-              : cachedRoutes[0]?.route_id;
+              : "";
           return activeRouteId ? routePreviewCache[activeRouteId] || current : current;
         });
       }
@@ -1627,12 +1722,9 @@ function App() {
           setBatchError("");
           setBatchDashboard(cachedDashboard);
           setBatchRoutes(cachedRoutes);
-          setSelectedBatchRouteId((current) => {
-            if (current && cachedRoutes.some((route) => route.route_id === current)) {
-              return current;
-            }
-            return cachedRoutes[0]?.route_id || "";
-          });
+          setSelectedBatchRouteId((current) =>
+            current && cachedRoutes.some((route) => route.route_id === current) ? current : "",
+          );
         });
         return;
       }
@@ -1679,12 +1771,9 @@ function App() {
           if (needsComparison) {
             setBatchComparison(comparisonPayload);
           }
-          setSelectedBatchRouteId((current) => {
-            if (current && routesPayload.routes.some((route) => route.route_id === current)) {
-              return current;
-            }
-            return routesPayload.routes[0]?.route_id || "";
-          });
+          setSelectedBatchRouteId((current) =>
+            current && routesPayload.routes.some((route) => route.route_id === current) ? current : "",
+          );
         });
       }
     }
@@ -1708,6 +1797,8 @@ function App() {
 
   useEffect(() => {
     if (!selectedBatchRouteId) {
+      setBatchRouteDetail(null);
+      setBatchRouteLoading(false);
       return undefined;
     }
 
@@ -1863,26 +1954,28 @@ function App() {
           vehicles={vehicles}
         />
       ) : (
-        <BatchWorkspace
-          cities={batchCities}
-          cityMetadata={cities}
-          selectedCity={selectedCity}
-          setSelectedCity={setSelectedCity}
-          batchLens={batchLens}
-          setBatchLens={setBatchLens}
-          batchDashboard={batchDashboard}
-          batchComparison={batchComparison}
-          batchRoutes={batchRoutes}
-          selectedBatchRouteId={selectedBatchRouteId}
-          setSelectedBatchRouteId={setSelectedBatchRouteId}
-          batchRouteDetail={batchRouteDetail}
-          batchRoutePreview={batchRoutePreviewCache[selectedCity]?.[selectedBatchRouteId] || null}
-          batchLoading={batchLoading}
-          batchRouteLoading={batchRouteLoading}
-          batchError={batchError}
-          batchMapViewState={batchMapViewState}
-          setBatchMapViewState={setBatchMapViewState}
-        />
+        <BatchRenderBoundary resetKey={`${selectedCity}:${selectedBatchRouteId}:${batchLens}`}>
+          <BatchWorkspace
+            cities={batchCities}
+            cityMetadata={cities}
+            selectedCity={selectedCity}
+            setSelectedCity={setSelectedCity}
+            batchLens={batchLens}
+            setBatchLens={setBatchLens}
+            batchDashboard={batchDashboard}
+            batchComparison={batchComparison}
+            batchRoutes={batchRoutes}
+            selectedBatchRouteId={selectedBatchRouteId}
+            setSelectedBatchRouteId={setSelectedBatchRouteId}
+            batchRouteDetail={batchRouteDetail}
+            batchRoutePreview={batchRoutePreviewCache[selectedCity]?.[selectedBatchRouteId] || null}
+            batchLoading={batchLoading}
+            batchRouteLoading={batchRouteLoading}
+            batchError={batchError}
+            batchMapViewState={batchMapViewState}
+            setBatchMapViewState={setBatchMapViewState}
+          />
+        </BatchRenderBoundary>
       )}
     </div>
   );
