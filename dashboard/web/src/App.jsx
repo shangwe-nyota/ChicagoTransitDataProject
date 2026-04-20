@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
 import { PathLayer, ScatterplotLayer } from "@deck.gl/layers";
 import { Map } from "react-map-gl/maplibre";
@@ -38,6 +38,32 @@ const ROUTE_MODE_COLORS = {
   3: "#22c55e",
   4: "#14b8a6",
 };
+
+const CITY_BATCH_THEMES = {
+  boston: {
+    accent: "#fb7185",
+    accentSoft: "#fecdd3",
+    path: [251, 113, 133, 235],
+    pathHalo: [125, 211, 252, 235],
+    stopFill: [15, 118, 110, 220],
+    stopStroke: [252, 243, 240, 255],
+    panelGlow: "rgba(251, 113, 133, 0.24)",
+  },
+  chicago: {
+    accent: "#38bdf8",
+    accentSoft: "#bae6fd",
+    path: [56, 189, 248, 235],
+    pathHalo: [249, 115, 22, 235],
+    stopFill: [234, 88, 12, 220],
+    stopStroke: [255, 247, 237, 255],
+    panelGlow: "rgba(56, 189, 248, 0.24)",
+  },
+};
+
+const LIVE_ANIMATION_MIN_MS = 900;
+const LIVE_ANIMATION_MAX_MS = 3200;
+const LIVE_ANIMATION_FALLBACK_MS = 1800;
+const LIVE_ANIMATION_FRAME_MS = 33;
 
 function statusColor(status) {
   switch (status) {
@@ -160,6 +186,10 @@ function routeViewStateFromDetail(detail, fallbackCity) {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function formatNumber(value) {
   const numeric = Number(value ?? 0);
   if (!Number.isFinite(numeric)) {
@@ -201,6 +231,16 @@ function routeLabel(route) {
   return route.route_short_name || route.route_long_name || route.route_id || "Unknown route";
 }
 
+function stopDisplayLabel(stop) {
+  if (!stop) {
+    return "Unknown stop";
+  }
+  if ((stop.stop_instances || 1) > 1) {
+    return `${stop.stop_name} (${stop.stop_instances} platforms)`;
+  }
+  return stop.stop_name;
+}
+
 function amenityGroupLabel(group) {
   const labels = {
     food: "Food and cafes",
@@ -223,6 +263,27 @@ function batchLensDescription(lens) {
   return lens === "access"
     ? "Highlights stops with the richest mix of daily destinations within a short walk."
     : "Highlights where scheduled service concentrates most heavily across the network.";
+}
+
+function batchCityTheme(citySlug) {
+  return CITY_BATCH_THEMES[citySlug] || CITY_BATCH_THEMES.boston;
+}
+
+function citySpecificAtlasStory(citySlug, dashboard) {
+  const busiestRoute = routeLabel(dashboard?.overview?.busiest_route);
+  const topAmenityStop = dashboard?.overview?.poi_leader?.stop_name || "its best-connected stop";
+
+  if (citySlug === "chicago") {
+    return {
+      title: "Chicago network pulse",
+      body: `Chicago reads best as a broad bus-and-rail access story. Right now the strongest corridor spotlight is ${busiestRoute}, while ${topAmenityStop} anchors the densest neighborhood access.`,
+    };
+  }
+
+  return {
+    title: "Boston corridor pulse",
+    body: `Boston reads best as a rail-shaped corridor story. ${busiestRoute} stands out in the current batch snapshot, and ${topAmenityStop} shows where service and nearby destinations stack up most strongly.`,
+  };
 }
 
 function buildConicGradient(rows, valueKey, colorForRow) {
@@ -268,6 +329,53 @@ function batchStopRadius(stop, lens, maxValue) {
 
 function rowValue(row, lens) {
   return lens === "access" ? row.poi_count_within_400m ?? 0 : row.trip_count ?? 0;
+}
+
+function summarizeRouteStopsForDisplay(stops) {
+  const grouped = new Map();
+
+  for (const stop of stops ?? []) {
+    const key = stop.stop_name || stop.stop_id;
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, {
+        ...stop,
+        stop_instances: 1,
+        trip_count: Number(stop.trip_count || 0),
+        poi_count_within_400m: Number(stop.poi_count_within_400m || 0),
+        food_poi_count_within_400m: Number(stop.food_poi_count_within_400m || 0),
+        critical_service_poi_count_within_400m: Number(stop.critical_service_poi_count_within_400m || 0),
+        park_poi_count_within_400m: Number(stop.park_poi_count_within_400m || 0),
+      });
+      continue;
+    }
+
+    existing.stop_instances += 1;
+    existing.trip_count += Number(stop.trip_count || 0);
+    existing.poi_count_within_400m = Math.max(existing.poi_count_within_400m, Number(stop.poi_count_within_400m || 0));
+    existing.food_poi_count_within_400m = Math.max(existing.food_poi_count_within_400m, Number(stop.food_poi_count_within_400m || 0));
+    existing.critical_service_poi_count_within_400m = Math.max(
+      existing.critical_service_poi_count_within_400m,
+      Number(stop.critical_service_poi_count_within_400m || 0),
+    );
+    existing.park_poi_count_within_400m = Math.max(existing.park_poi_count_within_400m, Number(stop.park_poi_count_within_400m || 0));
+  }
+
+  return Array.from(grouped.values()).sort((left, right) => {
+    if (Number(right.trip_count || 0) !== Number(left.trip_count || 0)) {
+      return Number(right.trip_count || 0) - Number(left.trip_count || 0);
+    }
+    return Number(right.poi_count_within_400m || 0) - Number(left.poi_count_within_400m || 0);
+  });
+}
+
+function interpolationDurationMs(previousVehicle, nextVehicle) {
+  const previousTime = previousVehicle?.updated_at ? new Date(previousVehicle.updated_at).getTime() : null;
+  const nextTime = nextVehicle?.updated_at ? new Date(nextVehicle.updated_at).getTime() : null;
+  if (!previousTime || !nextTime || nextTime <= previousTime) {
+    return LIVE_ANIMATION_FALLBACK_MS;
+  }
+  return clamp(nextTime - previousTime, LIVE_ANIMATION_MIN_MS, LIVE_ANIMATION_MAX_MS);
 }
 
 function ModeToggle({ mode, setMode }) {
@@ -322,11 +430,11 @@ function LegendCard({ title, caption, items }) {
   );
 }
 
-function BarChartCard({ title, caption, rows, labelKey, valueKey, formatLabel, formatValue, color }) {
+function BarChartCard({ title, caption, rows, labelKey, valueKey, formatLabel, formatValue, color, tone = "" }) {
   const maxValue = rows.reduce((currentMax, row) => Math.max(currentMax, Number(row[valueKey] || 0)), 0);
 
   return (
-    <section className="insight-card">
+    <section className={`insight-card ${tone}`}>
       <div className="insight-header">
         <h3>{title}</h3>
         <p>{caption}</p>
@@ -385,14 +493,25 @@ function DonutBreakdownCard({ title, caption, rows, valueKey, labelForRow, color
   );
 }
 
-function RouteSpotlightMap({ detail, fallbackCity }) {
+function RouteSpotlightMap({ detail, fallbackCity, theme }) {
   const routeMapViewState = routeViewStateFromDetail(detail, fallbackCity);
+  const haloLayer = new PathLayer({
+    id: "route-spotlight-halo",
+    data: detail?.paths ?? [],
+    getPath: (row) => row.path,
+    getColor: theme.pathHalo,
+    getWidth: 10,
+    widthMinPixels: 5,
+    widthMaxPixels: 12,
+    opacity: 0.35,
+    pickable: false,
+  });
   const pathLayer = new PathLayer({
     id: "route-spotlight-paths",
     data: detail?.paths ?? [],
     getPath: (row) => row.path,
-    getColor: [255, 196, 61, 235],
-    getWidth: 6,
+    getColor: theme.path,
+    getWidth: 6.5,
     widthMinPixels: 3,
     widthMaxPixels: 8,
     pickable: false,
@@ -401,9 +520,9 @@ function RouteSpotlightMap({ detail, fallbackCity }) {
     id: "route-spotlight-stops",
     data: detail?.stops ?? [],
     getPosition: (row) => [row.stop_lon, row.stop_lat],
-    getFillColor: (row) => (row.poi_count_within_400m ? [125, 211, 252, 220] : [248, 250, 252, 200]),
-    getLineColor: [15, 23, 42, 255],
-    getRadius: (row) => Math.max(40, Math.min(120, 28 + Math.sqrt(Number(row.trip_count || 0)))),
+    getFillColor: (row) => (row.poi_count_within_400m ? theme.stopFill : theme.pathHalo),
+    getLineColor: theme.stopStroke,
+    getRadius: (row) => Math.max(50, Math.min(140, 32 + Math.sqrt(Number(row.trip_count || 0)) * 4)),
     radiusMinPixels: 5,
     radiusMaxPixels: 16,
     pickable: true,
@@ -416,7 +535,7 @@ function RouteSpotlightMap({ detail, fallbackCity }) {
       <DeckGL
         viewState={routeMapViewState}
         controller={true}
-        layers={[pathLayer, stopLayer]}
+        layers={[haloLayer, pathLayer, stopLayer]}
         getTooltip={({ object }) =>
           object
             ? {
@@ -703,6 +822,7 @@ function BatchWorkspace({
   batchMapViewState,
   setBatchMapViewState,
 }) {
+  const routeStopsForDisplay = summarizeRouteStopsForDisplay(batchRouteDetail?.stops ?? batchRoutePreview?.stops ?? []);
   const topStopsForLens =
     batchLens === "access"
       ? batchDashboard?.top_stops_by_poi ?? []
@@ -711,6 +831,8 @@ function BatchWorkspace({
     batchLens === "access"
       ? batchDashboard?.top_routes_by_poi ?? []
       : batchDashboard?.top_routes_by_activity ?? [];
+  const cityTheme = batchCityTheme(selectedCity);
+  const cityStory = citySpecificAtlasStory(selectedCity, batchDashboard);
   const amenityMix = (batchDashboard?.amenity_mix ?? []).slice(0, 6);
   const routeModeMix = (batchDashboard?.route_mode_mix ?? []).slice(0, 5);
   const topAmenityStops = (batchDashboard?.top_stops_by_poi ?? []).slice(0, 8);
@@ -829,6 +951,21 @@ function BatchWorkspace({
         </div>
 
         <div className="panel-block">
+          <h2>{cityStory.title}</h2>
+          <div className="city-story-card" style={{ boxShadow: `inset 0 0 0 1px rgba(255,255,255,0.06), 0 18px 45px ${cityTheme.panelGlow}` }}>
+            <p>{cityStory.body}</p>
+            <div className="city-story-chips">
+              <span style={{ borderColor: cityTheme.accentSoft, color: cityTheme.accentSoft }}>
+                {selectedCity === "boston" ? "Rail-weighted batch story" : "Access-weighted grid story"}
+              </span>
+              <span style={{ borderColor: cityTheme.accentSoft, color: cityTheme.accentSoft }}>
+                {batchLens === "access" ? "Neighborhood access lens" : "Service intensity lens"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel-block">
           <h2>Snapshot</h2>
           <div className="snapshot-stack">
             <div className="snapshot-card">
@@ -891,6 +1028,10 @@ function BatchWorkspace({
               <span>Current route spotlight</span>
               <strong>{selectedRoute ? routeLabel(selectedRoute) : "Choose a route"}</strong>
             </div>
+            <div className="map-meta">
+              <span>City framing</span>
+              <strong>{selectedCity === "boston" ? "Rail corridors + access" : "Grid routes + everyday access"}</strong>
+            </div>
           </div>
         </div>
 
@@ -908,7 +1049,8 @@ function BatchWorkspace({
             labelKey="stop_name"
             valueKey="trip_count"
             formatValue={(value) => `${formatCompact(value)} stop events`}
-            color={() => BATCH_ACTIVITY_SCALE[3]}
+            color={() => cityTheme.accent}
+            tone="tone-service"
           />
 
           <BarChartCard
@@ -918,7 +1060,8 @@ function BatchWorkspace({
             labelKey="stop_name"
             valueKey="poi_count_within_400m"
             formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.food_poi_count_within_400m || 0)} food`}
-            color={() => BATCH_ACCESS_SCALE[3]}
+            color={() => cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[3]}
+            tone="tone-access"
           />
 
           <BarChartCard
@@ -934,7 +1077,8 @@ function BatchWorkspace({
               batchLens === "access"
                 ? `${formatNumber(value)} amenity touches, ${Number(row.avg_poi_access_per_stop || 0).toFixed(1)} avg per stop`
                 : `${formatCompact(value)} stop events across ${formatNumber(row.distinct_stop_count)} stops`}
-            color={() => batchLens === "access" ? BATCH_ACCESS_SCALE[2] : BATCH_ACTIVITY_SCALE[2]}
+            color={() => batchLens === "access" ? cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[2] : cityTheme.accent}
+            tone={batchLens === "access" ? "tone-access" : "tone-service"}
           />
 
           <DonutBreakdownCard
@@ -989,34 +1133,38 @@ function BatchWorkspace({
                     ? `${routeLabel(selectedRoute)} blends ${formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)} scheduled stop events with ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)} nearby amenities across its corridor.`
                     : "Select a route to read its corridor story."}
                 </p>
-                <RouteSpotlightMap detail={batchRouteDetail || batchRoutePreview} fallbackCity={cityMetadata.find((city) => city.slug === selectedCity) || null} />
+                <RouteSpotlightMap detail={batchRouteDetail || batchRoutePreview} fallbackCity={cityMetadata.find((city) => city.slug === selectedCity) || null} theme={cityTheme} />
                 <div className="route-analytics-grid">
                   <BarChartCard
                     title="Busiest stops on this route"
                     caption="The stops where this route contributes the most scheduled activity."
-                    rows={((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? []).slice(0, 8)}
+                    rows={routeStopsForDisplay.slice(0, 8)}
                     labelKey="stop_name"
                     valueKey="trip_count"
+                    formatLabel={(_, row) => stopDisplayLabel(row)}
                     formatValue={(value) => `${formatNumber(value)} stop events`}
-                    color={() => BATCH_ACTIVITY_SCALE[3]}
+                    color={() => cityTheme.accent}
+                    tone="tone-service"
                   />
                   <BarChartCard
                     title="Best access points on this route"
                     caption="Where this route connects riders to the strongest nearby mix of amenities."
-                    rows={[...((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? [])]
+                    rows={[...routeStopsForDisplay]
                       .sort((left, right) => Number(right.poi_count_within_400m || 0) - Number(left.poi_count_within_400m || 0))
                       .slice(0, 8)}
                     labelKey="stop_name"
                     valueKey="poi_count_within_400m"
+                    formatLabel={(_, row) => stopDisplayLabel(row)}
                     formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.critical_service_poi_count_within_400m || 0)} essential`}
-                    color={() => BATCH_ACCESS_SCALE[3]}
+                    color={() => cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[3]}
+                    tone="tone-access"
                   />
                 </div>
                 <div className="route-stop-list">
-                  {((batchRouteDetail?.stops ?? batchRoutePreview?.stops) ?? []).slice(0, 8).map((stop) => (
-                    <div className="route-stop-row" key={`${stop.route_id}-${stop.stop_id}`}>
+                  {routeStopsForDisplay.slice(0, 8).map((stop) => (
+                    <div className="route-stop-row" key={`${stop.route_id}-${stop.stop_name}`}>
                       <div>
-                        <strong>{stop.stop_name}</strong>
+                        <strong>{stopDisplayLabel(stop)}</strong>
                         <span>{formatNumber(stop.trip_count)} stop events</span>
                       </div>
                       <div className="route-stop-badges">
@@ -1057,6 +1205,7 @@ function App() {
   const [selectedCity, setSelectedCity] = useState("boston");
 
   const [vehicleMap, setVehicleMap] = useState({});
+  const [animatedVehicleMap, setAnimatedVehicleMap] = useState({});
   const [routeFilter, setRouteFilter] = useState("");
   const [health, setHealth] = useState(null);
   const [connectionState, setConnectionState] = useState("connecting");
@@ -1078,6 +1227,11 @@ function App() {
   const [batchRouteLoading, setBatchRouteLoading] = useState(false);
   const [batchError, setBatchError] = useState("");
   const [batchMapViewState, setBatchMapViewState] = useState(cityViewState(null));
+  const previousVehicleMapRef = useRef({});
+  const animatedVehicleMapRef = useRef({});
+  const liveAnimationStateRef = useRef({});
+  const liveAnimationFrameRef = useRef(null);
+  const lastAnimationFrameAtRef = useRef(0);
 
   useEffect(() => {
     async function loadCities() {
@@ -1284,9 +1438,13 @@ function App() {
       if (!cancelled) {
         startTransition(() => {
           setVehicleMap(nextVehicleMap);
+          setAnimatedVehicleMap(nextVehicleMap);
           setHealth(healthPayload);
           setRouteFilter("");
         });
+        previousVehicleMapRef.current = nextVehicleMap;
+        animatedVehicleMapRef.current = nextVehicleMap;
+        liveAnimationStateRef.current = {};
       }
     }
 
@@ -1298,6 +1456,120 @@ function App() {
 
     return () => {
       cancelled = true;
+    };
+  }, [mode, selectedCity]);
+
+  useEffect(() => {
+    if (mode !== "live") {
+      return undefined;
+    }
+
+    const previousVehicleMap = previousVehicleMapRef.current;
+    const currentAnimatedMap = animatedVehicleMapRef.current;
+    const nextAnimationStates = { ...liveAnimationStateRef.current };
+    const nextAnimatedMap = { ...currentAnimatedMap };
+    const now = performance.now();
+
+    Object.entries(vehicleMap).forEach(([vehicleId, nextVehicle]) => {
+      const previousVehicle = previousVehicleMap[vehicleId];
+      const currentRenderedVehicle = currentAnimatedMap[vehicleId];
+      const coordinatesChanged =
+        previousVehicle &&
+        (Number(previousVehicle.latitude) !== Number(nextVehicle.latitude) ||
+          Number(previousVehicle.longitude) !== Number(nextVehicle.longitude));
+
+      if (!previousVehicle || !coordinatesChanged || !currentRenderedVehicle) {
+        nextAnimatedMap[vehicleId] = nextVehicle;
+        delete nextAnimationStates[vehicleId];
+        return;
+      }
+
+      nextAnimationStates[vehicleId] = {
+        fromLat: Number(currentRenderedVehicle.latitude),
+        fromLon: Number(currentRenderedVehicle.longitude),
+        toLat: Number(nextVehicle.latitude),
+        toLon: Number(nextVehicle.longitude),
+        payload: nextVehicle,
+        startedAt: now,
+        durationMs: interpolationDurationMs(previousVehicle, nextVehicle),
+      };
+    });
+
+    Object.keys(nextAnimatedMap).forEach((vehicleId) => {
+      if (!vehicleMap[vehicleId]) {
+        delete nextAnimatedMap[vehicleId];
+        delete nextAnimationStates[vehicleId];
+      }
+    });
+
+    previousVehicleMapRef.current = vehicleMap;
+    animatedVehicleMapRef.current = nextAnimatedMap;
+    liveAnimationStateRef.current = nextAnimationStates;
+    setAnimatedVehicleMap(nextAnimatedMap);
+  }, [mode, vehicleMap]);
+
+  useEffect(() => {
+    if (mode !== "live") {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    function animate(now) {
+      if (cancelled) {
+        return;
+      }
+
+      if (now - lastAnimationFrameAtRef.current < LIVE_ANIMATION_FRAME_MS) {
+        liveAnimationFrameRef.current = requestAnimationFrame(animate);
+        return;
+      }
+      lastAnimationFrameAtRef.current = now;
+
+      const animationStates = liveAnimationStateRef.current;
+      if (Object.keys(animationStates).length === 0) {
+        liveAnimationFrameRef.current = requestAnimationFrame(animate);
+        return;
+      }
+
+      let hasChanges = false;
+      const nextAnimatedMap = { ...animatedVehicleMapRef.current };
+      const nextAnimationStates = { ...animationStates };
+
+      Object.entries(animationStates).forEach(([vehicleId, state]) => {
+        const progress = clamp((now - state.startedAt) / state.durationMs, 0, 1);
+        const nextLatitude = state.fromLat + (state.toLat - state.fromLat) * progress;
+        const nextLongitude = state.fromLon + (state.toLon - state.fromLon) * progress;
+        nextAnimatedMap[vehicleId] = {
+          ...state.payload,
+          latitude: nextLatitude,
+          longitude: nextLongitude,
+        };
+        hasChanges = true;
+
+        if (progress >= 1) {
+          nextAnimatedMap[vehicleId] = state.payload;
+          delete nextAnimationStates[vehicleId];
+        }
+      });
+
+      if (hasChanges) {
+        animatedVehicleMapRef.current = nextAnimatedMap;
+        liveAnimationStateRef.current = nextAnimationStates;
+        setAnimatedVehicleMap(nextAnimatedMap);
+      }
+
+      liveAnimationFrameRef.current = requestAnimationFrame(animate);
+    }
+
+    liveAnimationFrameRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      cancelled = true;
+      if (liveAnimationFrameRef.current) {
+        cancelAnimationFrame(liveAnimationFrameRef.current);
+        liveAnimationFrameRef.current = null;
+      }
     };
   }, [mode, selectedCity]);
 
@@ -1544,7 +1816,7 @@ function App() {
     };
   }, [batchBootstrapLoaded, batchRoutesCache, batchRouteDetailCache]);
 
-  const vehicles = Object.values(vehicleMap);
+  const vehicles = Object.values(animatedVehicleMap);
   const batchHeroCity = batchCities.find((city) => city.slug === selectedCity) || cities.find((city) => city.slug === selectedCity);
 
   return (
