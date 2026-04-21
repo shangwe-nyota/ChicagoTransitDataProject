@@ -63,8 +63,8 @@ const CITY_BATCH_THEMES = {
 };
 
 const LIVE_ANIMATION_MIN_MS = 900;
-const LIVE_ANIMATION_MAX_MS = 3200;
-const LIVE_ANIMATION_FALLBACK_MS = 1800;
+const LIVE_ANIMATION_MAX_MS = 4800;
+const LIVE_ANIMATION_FALLBACK_MS = 2200;
 const LIVE_ANIMATION_FRAME_MS = 33;
 
 function statusColor(status) {
@@ -196,6 +196,21 @@ function routeViewStateFromDetail(detail, fallbackCity) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function easeInOutCubic(value) {
+  if (value < 0.5) {
+    return 4 * value * value * value;
+  }
+  return 1 - Math.pow(-2 * value + 2, 3) / 2;
+}
+
+function zoomMotionFactor(zoom) {
+  const numericZoom = Number(zoom);
+  if (!Number.isFinite(numericZoom)) {
+    return 1;
+  }
+  return clamp(0.72 + ((numericZoom - 9) / 4) * 0.42, 0.68, 1.28);
 }
 
 function formatNumber(value) {
@@ -377,13 +392,23 @@ function summarizeRouteStopsForDisplay(stops) {
   });
 }
 
-function interpolationDurationMs(previousVehicle, nextVehicle) {
+function interpolationDurationMs(previousVehicle, nextVehicle, observedGapMs, zoom) {
   const previousTime = previousVehicle?.updated_at ? new Date(previousVehicle.updated_at).getTime() : null;
   const nextTime = nextVehicle?.updated_at ? new Date(nextVehicle.updated_at).getTime() : null;
-  if (!previousTime || !nextTime || nextTime <= previousTime) {
-    return LIVE_ANIMATION_FALLBACK_MS;
+  const sourceGapMs = previousTime && nextTime && nextTime > previousTime ? nextTime - previousTime : null;
+  const cadenceGapMs = Number.isFinite(observedGapMs) ? observedGapMs : null;
+
+  let baseDurationMs = LIVE_ANIMATION_FALLBACK_MS;
+  if (sourceGapMs && cadenceGapMs) {
+    baseDurationMs = Math.max(sourceGapMs, cadenceGapMs * 0.92);
+  } else if (cadenceGapMs) {
+    baseDurationMs = cadenceGapMs * 0.92;
+  } else if (sourceGapMs) {
+    baseDurationMs = sourceGapMs;
   }
-  return clamp(nextTime - previousTime, LIVE_ANIMATION_MIN_MS, LIVE_ANIMATION_MAX_MS);
+
+  const zoomFactor = zoomMotionFactor(zoom);
+  return clamp(baseDurationMs * zoomFactor, LIVE_ANIMATION_MIN_MS, LIVE_ANIMATION_MAX_MS);
 }
 
 function ModeToggle({ mode, setMode }) {
@@ -1329,6 +1354,7 @@ function App() {
   const [batchError, setBatchError] = useState("");
   const [batchMapViewState, setBatchMapViewState] = useState(cityViewState(null));
   const previousVehicleMapRef = useRef({});
+  const vehicleArrivalRef = useRef({});
   const animatedVehicleMapRef = useRef({});
   const liveAnimationStateRef = useRef({});
   const liveAnimationFrameRef = useRef(null);
@@ -1538,6 +1564,9 @@ function App() {
           setRouteFilter("");
         });
         previousVehicleMapRef.current = nextVehicleMap;
+        vehicleArrivalRef.current = Object.fromEntries(
+          Object.keys(nextVehicleMap).map((vehicleId) => [vehicleId, performance.now()]),
+        );
         animatedVehicleMapRef.current = nextVehicleMap;
         liveAnimationStateRef.current = {};
       }
@@ -1560,10 +1589,13 @@ function App() {
     }
 
     const previousVehicleMap = previousVehicleMapRef.current;
+    const previousArrivals = vehicleArrivalRef.current;
     const currentAnimatedMap = animatedVehicleMapRef.current;
     const nextAnimationStates = { ...liveAnimationStateRef.current };
     const nextAnimatedMap = { ...currentAnimatedMap };
+    const nextArrivals = { ...previousArrivals };
     const now = performance.now();
+    const liveZoom = liveMapViewState?.zoom;
 
     Object.entries(vehicleMap).forEach(([vehicleId, nextVehicle]) => {
       const previousVehicle = previousVehicleMap[vehicleId];
@@ -1576,8 +1608,11 @@ function App() {
       if (!previousVehicle || !coordinatesChanged || !currentRenderedVehicle) {
         nextAnimatedMap[vehicleId] = nextVehicle;
         delete nextAnimationStates[vehicleId];
+        nextArrivals[vehicleId] = now;
         return;
       }
+
+      const observedGapMs = previousArrivals[vehicleId] ? now - previousArrivals[vehicleId] : null;
 
       nextAnimationStates[vehicleId] = {
         fromLat: Number(currentRenderedVehicle.latitude),
@@ -1586,22 +1621,25 @@ function App() {
         toLon: Number(nextVehicle.longitude),
         payload: nextVehicle,
         startedAt: now,
-        durationMs: interpolationDurationMs(previousVehicle, nextVehicle),
+        durationMs: interpolationDurationMs(previousVehicle, nextVehicle, observedGapMs, liveZoom),
       };
+      nextArrivals[vehicleId] = now;
     });
 
     Object.keys(nextAnimatedMap).forEach((vehicleId) => {
       if (!vehicleMap[vehicleId]) {
         delete nextAnimatedMap[vehicleId];
         delete nextAnimationStates[vehicleId];
+        delete nextArrivals[vehicleId];
       }
     });
 
     previousVehicleMapRef.current = vehicleMap;
+    vehicleArrivalRef.current = nextArrivals;
     animatedVehicleMapRef.current = nextAnimatedMap;
     liveAnimationStateRef.current = nextAnimationStates;
     setAnimatedVehicleMap(nextAnimatedMap);
-  }, [mode, vehicleMap]);
+  }, [mode, vehicleMap, liveMapViewState.zoom]);
 
   useEffect(() => {
     if (mode !== "live") {
@@ -1633,8 +1671,9 @@ function App() {
 
       Object.entries(animationStates).forEach(([vehicleId, state]) => {
         const progress = clamp((now - state.startedAt) / state.durationMs, 0, 1);
-        const nextLatitude = state.fromLat + (state.toLat - state.fromLat) * progress;
-        const nextLongitude = state.fromLon + (state.toLon - state.fromLon) * progress;
+        const easedProgress = easeInOutCubic(progress);
+        const nextLatitude = state.fromLat + (state.toLat - state.fromLat) * easedProgress;
+        const nextLongitude = state.fromLon + (state.toLon - state.fromLon) * easedProgress;
         nextAnimatedMap[vehicleId] = {
           ...state.payload,
           latitude: nextLatitude,
