@@ -264,6 +264,10 @@ Current tests cover several of the most important shared components:
 - `tests/test_batch_config.py`
 - `tests/test_run_metadata.py`
 - `tests/test_batch_service.py`
+- `tests/test_live_topics.py`
+- `tests/test_live_models_and_store.py`
+
+
 
 Run them with:
 
