@@ -1,250 +1,129 @@
 # Repository Architecture
 
-## High-Level View
+This repository now centers on one shared multi-city transit platform rather than separate city-specific projects. The system has two primary execution paths:
 
-This repository currently has two strong implementation centers and one emerging shared platform layer.
+- `Batch Atlas`
+  - daily GTFS + OpenStreetMap processing for Boston and Chicago
+  - Spark-based cleaning and analytics
+  - Snowflake-backed storage and serving
 
-### Chicago Batch Center
+- `Live Ops`
+  - real-time vehicle ingestion for Boston and Chicago
+  - Kafka + Flink latest-state processing
+  - Redis + FastAPI serving
+  - React + deck.gl + MapLibre dashboard
 
-Chicago is the most complete batch/static city today.
+## High-Level Structure
 
-Current Chicago batch story:
+### Batch path
 
-1. CTA GTFS static download
-2. raw GTFS files extracted into `data/raw/gtfs/`
-3. Spark cleaning jobs under `jobs/spark/`
-4. Spark analytics jobs under `jobs/spark/analytics/`
-5. optional Snowflake loading via `jobs/load/load_to_snowflake.py`
-6. legacy Streamlit analytics dashboard in `dashboard/app.py`
+The city-aware batch path is centered around:
 
-### Shared Live Platform Center
-
-The newer live stack is shared across cities and is now the most actively evolving part of the repo.
-
-Core layers:
-
-- normalization contracts in `src/live/`
-- realtime jobs in `jobs/realtime/`
-- serving API in `dashboard/live_api.py`
-- modern frontend in `dashboard/web/`
-- orchestration via `scripts/live.sh`
-
-That same frontend now also contains a Snowflake-backed batch mode, so `dashboard/live_api.py` is effectively the shared serving layer for:
-
-- live Redis-backed endpoints
-- batch Snowflake-backed endpoints
-
-### Emerging Multi-City Direction
-
-The intended platform direction is:
-
-- Chicago batch GTFS + OSM
-- Boston batch GTFS + OSM
-- Boston live
-- Chicago live where practical
-- one shared dashboard experience
-
-That direction is no longer only aspirational. The city-aware batch path now runs end to end for both Chicago and Boston, and both cities have been loaded into the new `BATCH_*` Snowflake tables.
-
-## Top-Level Directory Roles
-
-- `config/`
-  - project configuration files such as `settings.yaml`
-
-- `dags/`
-  - Airflow orchestration for batch work
-  - `multi_city_batch_pipeline.py` is now the preferred daily batch DAG
-
-- `dashboard/`
-  - `app.py` is the legacy Streamlit batch dashboard
-  - `live_api.py` is the FastAPI service for the live stack
-  - `web/` is the React + deck.gl + MapLibre live dashboard
-
-- `data/`
-  - local raw, staging, and processed data outputs
-  - current processed folders primarily reflect the Chicago batch pipeline
-
-- `docs/`
-  - project documentation
-  - should be treated as helpful context, but code remains the source of truth
-
-- `jobs/`
-  - ingestion, Spark batch transforms, live jobs, load jobs, and validation hooks
-
-- `scripts/`
-  - local developer run scripts
-  - `live.sh` is the main entrypoint for the live runtime
-
-- `sql/`
-  - DDL, queries, and validation SQL
-
-- `src/`
-  - reusable Python modules
-  - `src/live/` is currently the most important shared subsystem
-
-- `tests/`
-  - lightweight current test suite
-  - still needs expansion
-
-## Current Architectural Split
-
-### Batch
-
-Batch is still Chicago-first and Spark-first.
-
-Important batch outputs currently exist under:
-
-- `data/processed/clean/gtfs/`
-- `data/processed/analytics/`
-
-These power:
-
-- local parquet inspection
-- Streamlit visualizations
-- optional Snowflake loading
-
-### Live
-
-Live is now city-aware and shared.
-
-Shared live contract:
-
-- `LiveVehicleState` in `src/live/models.py`
-
-Shared live infrastructure:
-
-- Kafka
-- Flink
-- Redis
-- FastAPI
-- React + deck.gl + MapLibre
-
-City-specific live source adapters:
-
-- Boston:
-  - `src/live/mbta.py`
-- Chicago:
-  - `src/live/cta.py`
-
-### Batch Serving
-
-Batch is now exposed through FastAPI rather than sending the browser directly to Snowflake.
-
-Current serving layer:
-
-- query logic in `src/batch/service.py`
-- API endpoints in `dashboard/live_api.py`
-- React batch visual layer in `dashboard/web/src/App.jsx`
-
-The batch serving path is intentionally cache-friendly because the underlying GTFS + OSM outputs refresh on a daily schedule rather than every few seconds:
-
-- FastAPI keeps an in-memory cache of Snowflake query results
-- the cache TTL is controlled by `BATCH_API_CACHE_TTL_SECONDS`
-- FastAPI can prewarm a full multi-city batch bootstrap snapshot on startup via `BATCH_API_PREWARM_ON_STARTUP`
-- the shared bootstrap endpoint gives the frontend both city snapshots up front instead of making the browser fan out into many first-load warehouse requests
-- the React app now memoizes city snapshots and previously opened route details in-session
-
-That means Snowflake remains the batch source of truth, but repeated route switches and city revisits should not keep re-querying the warehouse during normal dashboard use.
-
-This allows the newer frontend to combine:
-
-- live map state from Redis
-- batch GTFS + OSM analytics from Snowflake
-
-without splitting into multiple frontend apps.
-
-### Emerging City-Aware Batch Path
-
-There is now a newer batch foundation for multi-city GTFS + OSM work.
-
-That path is centered around:
-
-- `src/common/config.py`
-- `src/common/constants.py`
-- `src/common/paths.py`
-- `src/common/run_metadata.py`
 - `jobs/pipeline/run_city_batch_pipeline.py`
+- `jobs/ingestion/download_gtfs.py`
 - `jobs/ingestion/download_osm.py`
 - `jobs/spark/clean_gtfs_city.py`
 - `jobs/spark/clean_osm_city.py`
 - `jobs/spark/build_city_batch_analytics.py`
+- `jobs/load/load_to_snowflake.py`
 
-The new path writes city-scoped parquet outputs under:
+Batch orchestration is handled through:
+
+- `dags/multi_city_batch_pipeline.py`
+- `scripts/run_batch_pipeline.sh`
+
+Outputs are staged under:
 
 - `data/raw/gtfs/{city}`
 - `data/raw/osm/{city}`
 - `data/processed/{city}/clean/...`
 - `data/processed/{city}/analytics/...`
+- `data/staging/run_metadata/{run_id}/{city}/`
+- `data/staging/checkpoints/{city}/`
 
-This lets Boston and Chicago share one batch pattern without requiring a major repo reorganization.
+### Live path
 
-### Batch Idempotency And Resume Model
+The shared live stack is centered around:
 
-The city-aware batch path now includes lightweight run-manifest and checkpoint behavior.
+- `src/live/models.py`
+- `src/live/mbta.py`
+- `src/live/cta.py`
+- `src/live/redis_store.py`
+- `src/live/topics.py`
+- `jobs/realtime/*.py`
+- `dashboard/live_api.py`
+- `dashboard/web/`
 
-Key ideas:
+Preferred live flow:
 
-- every stage records a manifest JSON
-- manifests include row counts and path stats where available
-- rerunning the same `run_id` skips completed stages if outputs still exist
-- a full city batch run can be resumed through `jobs/pipeline/run_city_batch_pipeline.py`
+1. city-specific poller
+2. Kafka raw topic
+3. Flink latest-state job
+4. Kafka latest topic
+5. Redis latest-state store
+6. FastAPI
+7. React dashboard
 
-This is not a fully transactional warehouse pipeline, but it is intentionally designed to be:
+### Shared serving layer
 
-- rerunnable
-- practically idempotent for local development
-- resumable after stage-level failures
+The shared serving/UI layer is what turns this repository into one product rather than two unrelated pipelines:
 
-That makes it a much better fit for the current project than a brittle one-shot script chain.
+- `dashboard/live_api.py`
+  - Redis-backed live endpoints
+  - Snowflake-backed batch endpoints
 
-### Batch Scheduling Layer
+- `dashboard/web/src/App.jsx`
+  - `Live Ops`
+  - `Batch Atlas`
 
-The city-aware batch path now has two orchestration entrypoints:
+## Top-Level Directory Roles
 
-- Airflow:
-  - `dags/multi_city_batch_pipeline.py`
-- manual shell entrypoint:
-  - `scripts/run_batch_pipeline.sh`
+- `dags/`
+  - Airflow orchestration
 
-The intended pattern is:
+- `dashboard/`
+  - `app.py` is the legacy Streamlit dashboard
+  - `live_api.py` is the shared FastAPI service
+  - `web/` is the main React dashboard
 
-- Airflow runs Chicago and Boston once per day
-- a shared Snowflake load follows both city runs
-- local/manual runs use the same underlying Python batch pipeline, not a different code path
+- `jobs/`
+  - ingestion, Spark transforms, realtime jobs, and loading
 
-## Design Intent
+- `scripts/`
+  - local launchers and runtime helpers
 
-The repo is intentionally not being heavily reorganized right now.
+- `sql/ddl/`
+  - Snowflake DDL for raw, clean, and analytics table families
 
-The preferred pattern is:
+- `src/common/`
+  - shared config, paths, constants, and run metadata
 
-- preserve the current top-level structure
-- extend it with city-aware modules
-- keep serving/frontend contracts stable
-- avoid broad refactors during active presentation work
+- `src/batch/`
+  - Snowflake-backed batch query service
 
-That is why this repo does not currently use a full top-level split like:
+- `src/live/`
+  - live data contract and source-specific normalization
 
-- `cities/chicago/...`
-- `cities/boston/...`
+- `tests/`
+  - targeted coverage for shared configuration, metadata, and service logic
 
-The modularity is instead expressed through:
+## Key Design Decisions
 
-- city-scoped API routes
-- city-scoped Redis keys
-- city-scoped Kafka topics
-- city-specific source clients
-- a shared live schema
+- `city-awareness` is built into schemas, topics, Redis keys, and API routes
+- `LiveVehicleState` is the common live contract across ingestion, streaming, serving, and UI
+- `Snowflake` is the batch source of truth
+- `Redis` is the live latest-state serving layer
+- `FastAPI` is the stable boundary between data systems and the frontend
+- `raw -> clean -> analytics` remains the central batch modeling pattern
 
-## Most Important Modules For New Contributors
+## Recommended Starting Points
 
-If you need to understand the current architecture quickly, start with:
+If a new contributor needs to understand the repository quickly, the most useful sequence is:
 
-1. `src/live/`
-2. `jobs/realtime/`
-3. `dashboard/live_api.py`
-4. `dashboard/web/`
-5. `scripts/live.sh`
-6. `jobs/spark/analytics/`
-
-That sequence gives the best picture of how the repo works today.
+1. `README.md`
+2. `docs/pipeline_flow.md`
+3. `src/live/`
+4. `jobs/realtime/`
+5. `jobs/pipeline/run_city_batch_pipeline.py`
+6. `dashboard/live_api.py`
+7. `dashboard/web/`

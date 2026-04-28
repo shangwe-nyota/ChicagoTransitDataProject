@@ -2,7 +2,7 @@
 
 ## Current Realtime System
 
-The live dashboard is no longer Boston-only in architecture, even though Boston remains the primary presentation city.
+The live dashboard is currently shared across Boston and Chicago.
 
 The current shared live serving path is:
 
@@ -22,69 +22,6 @@ The direct fallback path still exists:
 3. FastAPI
 4. React dashboard
 
-That fallback exists so a demo can still run if Kafka or Flink has issues.
-
-## City Coverage Right Now
-
-### Boston
-
-Boston is the strongest live city right now.
-
-Implemented pieces:
-
-- MBTA client in `src/live/mbta.py`
-- direct poller:
-  - `jobs/realtime/mbta_poll_to_redis.py`
-- Kafka producer:
-  - `jobs/realtime/mbta_poll_to_kafka.py`
-- dashboard support through the shared API and frontend
-
-Boston live includes multiple modes when the source feed provides them, such as:
-
-- buses
-- subway
-- commuter rail
-- light rail
-- shuttles when MBTA exposes them that way
-
-Important operational note:
-
-- overnight Boston counts can be legitimately small
-- observed on `April 19, 2026` around `2:30 AM America/Chicago`:
-  - direct MBTA feed returned about `15` vehicles
-
-This means sparse Boston maps late at night do not necessarily indicate a bug.
-
-### Chicago
-
-Chicago is now wired into the same live stack, but with one important limitation.
-
-Implemented pieces:
-
-- CTA client in `src/live/cta.py`
-- direct poller:
-  - `jobs/realtime/cta_poll_to_redis.py`
-- Kafka producer:
-  - `jobs/realtime/cta_poll_to_kafka.py`
-- dashboard support through the shared API and frontend
-
-What works now:
-
-- CTA bus polling
-- normalization into `LiveVehicleState`
-- Kafka -> Flink -> Redis -> FastAPI -> React path
-- direct Redis fallback path
-
-What is blocked:
-
-- CTA train support depends on a valid train key
-- current configured CTA train key returns:
-  - `CTA Train Tracker error 101: Invalid API key`
-
-So operationally, Chicago should currently be treated as:
-
-- live buses working
-- live trains credential-blocked
 
 ## Why Redis Sits In The Middle
 
@@ -223,21 +160,3 @@ bash scripts/live.sh all boston
 bash scripts/live.sh all chicago
 ```
 
-## Known Limitations
-
-- Boston overnight feed volume can be low.
-- Chicago trains are blocked by credentials.
-- Chicago buses will often feel less dramatic than Boston multi-mode traffic because bus motion is smaller and there is no train layer yet.
-- the live dashboard is now much stronger than the batch dashboard path; the batch dashboard migration is still future work.
-
-## Immediate Next Work
-
-The agreed next steps after the current live branch are:
-
-1. verify Boston live during daytime when the feed is fuller
-2. improve live UI colors and legends
-3. build Boston GTFS + OSM batch support
-4. finish Chicago GTFS + OSM batch support
-5. move older batch visuals into the new dashboard
-6. add tests and validation jobs
-7. add a presentation runbook
