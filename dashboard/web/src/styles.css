@@ -448,6 +448,34 @@ td {
   gap: 12px;
 }
 
+.meaning-card {
+  background:
+    radial-gradient(circle at top left, rgba(125, 211, 252, 0.14), transparent 34%),
+    rgba(7, 14, 25, 0.72);
+}
+
+.meaning-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.meaning-grid div {
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.meaning-grid strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.meaning-grid span {
+  color: #b9cadd;
+  line-height: 1.45;
+}
+
 .legend-item,
 .donut-row {
   display: flex;
