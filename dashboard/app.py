@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
+# Initial Streamlit Dashboard for EDA
 OVERALL_DATA_PATH = "data/processed/analytics/stop_activity_enriched"
 ROUTE_DATA_PATH = "data/processed/analytics/stop_activity_by_route"
 
@@ -30,21 +31,24 @@ view_mode = st.sidebar.radio(
     ["Overall busiest stops", "Explore a bus route"]
 )
 
+
 # -----------------------------
 # Helper styling functions
 # -----------------------------
 def color_for_trip_count(x: int):
     if x < 500:
-        return [100, 149, 237, 160]   # blue
+        return [100, 149, 237, 160]  # blue
     elif x < 1000:
-        return [255, 165, 0, 180]     # orange
+        return [255, 165, 0, 180]  # orange
     elif x < 1500:
-        return [220, 20, 60, 190]     # red
+        return [220, 20, 60, 190]  # red
     else:
-        return [128, 0, 128, 210]     # purple
+        return [128, 0, 128, 210]  # purple
+
 
 def radius_for_trip_count(x: int):
     return max(40, min(300, 8 * math.sqrt(x)))
+
 
 # =========================================================
 # VIEW 1: OVERALL BUSIEST STOPS
@@ -154,9 +158,9 @@ else:
     )
 
     route_options["route_label"] = (
-        route_options["route_short_name"].fillna(route_options["route_id"]) +
-        " - " +
-        route_options["route_long_name"].fillna("")
+            route_options["route_short_name"].fillna(route_options["route_id"]) +
+            " - " +
+            route_options["route_long_name"].fillna("")
     )
 
     selected_label = st.selectbox(
@@ -192,7 +196,8 @@ else:
 
     st.markdown("### Top stops for this route")
     st.dataframe(
-        selected_df[["route_short_name", "route_long_name", "stop_name", "trip_count", "stop_lat", "stop_lon"]].head(25),
+        selected_df[["route_short_name", "route_long_name", "stop_name", "trip_count", "stop_lat", "stop_lon"]].head(
+            25),
         use_container_width=True
     )
 

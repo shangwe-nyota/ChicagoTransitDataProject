@@ -1,219 +1,294 @@
-#  Transit Data Pipeline
+# Real-Time Public Transit Reliability and Mapping Platform
 
-## Overview
+This repository contains our final project for a multi-city transit intelligence platform built around two complementary views of public transit:
 
-This project builds an end-to-end data pipeline for analyzing public transit data in using GTFS (General Transit Feed Specification) data.
+- `Batch Atlas`: daily GTFS + OpenStreetMap analytics for Boston and Chicago
+- `Live Ops`: real-time vehicle tracking for Boston and Chicago through Kafka, Flink, Redis, FastAPI, and a React map UI
 
-The pipeline ingests raw transit data, processes it using Spark, and loads structured datasets into Snowflake for analytics and querying. The goal is to create a scalable data engineering workflow that can later be extended to real-time streaming.
+The project began as a Chicago GTFS batch analytics pipeline and evolved into a shared multi-city system that now supports:
 
----
+- city-aware GTFS + OSM batch processing
+- Snowflake-backed batch serving
+- Boston live vehicle tracking
+- Chicago live bus tracking on the same live stack
+- one shared dashboard with both batch and live modes
 
-## What’s Implemented (Current State)
+Code is the source of truth. The README is intended to give the teaching team and future developers a reliable onboarding path.
 
-Currently have a fully working **batch data pipeline**:
+## Repository Overview
 
-###  Data Ingestion
+There are three main layers in the current project:
 
-* GTFS static data downloaded via Python scripts
-* Stored locally under `data/raw/gtfs`
+1. `Multi-city batch pipeline`
+   - downloads GTFS static and OpenStreetMap data for Boston and Chicago
+   - cleans raw data into city-aware Parquet entity tables
+   - computes service, accessibility, route, and roadway metrics
+   - loads clean and analytics outputs into Snowflake `BATCH_*` tables
 
-###  Data Processing (Spark)
+2. `Realtime streaming pipeline`
+   - polls agency live vehicle feeds
+   - normalizes them into a shared `LiveVehicleState` contract
+   - writes raw events to Kafka
+   - uses Flink to compute latest per-vehicle state
+   - serves latest-state records through Redis and FastAPI
 
-* Cleaned GTFS datasets:
+3. `Shared API and dashboard`
+   - FastAPI exposes both live and batch endpoints
+   - React + deck.gl + MapLibre renders:
+     - `Live Ops`
+     - `Batch Atlas`
 
-  * Stops
-  * Routes
-  * Trips
-  * Stop Times
-  * Shapes
-* Output stored as partitioned Parquet files
+## Current Status
 
-###  Data Warehouse (Snowflake)
+What is working today:
 
-Three-layer modeling approach:
+- Boston and Chicago batch GTFS + OSM runs
+- city-aware clean Parquet outputs
+- city-aware analytics Parquet outputs
+- Snowflake DDL and multi-city load path
+- Snowflake-backed batch API endpoints
+- batch mode inside the shared React dashboard
+- Boston live vehicle dashboard
+- Chicago live bus dashboard
+- Kafka -> Flink -> Kafka latest -> Redis -> FastAPI live path
+- direct-to-Redis fallback live pollers
+- daily Airflow DAG for multi-city batch orchestration
+- local launcher scripts for both batch and live workflows
 
-* **RAW (source-of-truth)**
-* **CLEAN (processed datasets)**
-* **ANALYTICS (aggregated insights)**
+Known limitations:
 
-###  Loaded Data Stats
+- Chicago train live support is code-complete but blocked by the configured CTA train API key
+- some legacy Chicago-only files remain for reference
+- tests exist for important shared pieces, but coverage is still lighter than a production system
 
-* CLEAN_GTFS_STOPS → 11,184 rows
+## Project Structure
 
-* CLEAN_GTFS_ROUTES → 131 rows
+Important directories:
 
-* CLEAN_GTFS_TRIPS → 94,496 rows
+- `dags/`
+  - Airflow orchestration
+  - `multi_city_batch_pipeline.py` is the main batch DAG
 
-* CLEAN_GTFS_STOP_TIMES → 5,838,352 rows
+- `jobs/ingestion/`
+  - GTFS and OSM download jobs
 
-* CLEAN_GTFS_SHAPES → 1,402,954 rows
+- `jobs/spark/`
+  - city-aware batch cleaning and analytics jobs
 
-* ANALYTICS_STOP_ACTIVITY → 11,027 rows
+- `jobs/realtime/`
+  - MBTA and CTA live pollers
+  - Flink-to-Redis bridge jobs
 
-* ANALYTICS_STOP_ACTIVITY_ENRICHED → 11,027 rows
+- `jobs/load/`
+  - Snowflake loading
 
-* ANALYTICS_ROUTE_ACTIVITY → 131 rows
+- `jobs/pipeline/`
+  - city-aware batch orchestration entrypoint
 
-* ANALYTICS_STOP_ACTIVITY_BY_ROUTE → 14,388 rows
+- `src/live/`
+  - live normalization contracts and serving helpers
 
-* ANALYTICS_ROUTE_SHAPES → 1,402,954 rows
+- `src/batch/`
+  - Snowflake-backed batch query service
 
----
+- `src/common/`
+  - shared configuration, paths, constants, and run metadata
 
-##  Pipeline Architecture (Batch)
+- `dashboard/live_api.py`
+  - FastAPI service for both live and batch endpoints
 
-```
-GTFS Static (CSV)        OSM Data (PBF/GeoJSON)
-        ↓                        ↓
-     Python Scripts (download)
-                ↓
-             Airflow
-        (orchestration)
-                ↓
-            Spark (PySpark)
-     - cleaning
-     - filtering
-     - joins
-                ↓
-           Snowflake
-     - raw tables
-     - clean tables
-     - analytics tables
-                ↓
-          SQL Queries
-                ↓
-        Dashboard / Map UI
-```
+- `dashboard/web/`
+  - React dashboard frontend
 
----
+- `sql/ddl/`
+  - Snowflake DDL for raw, clean, and analytics table families
 
-##  Future Architecture (Streaming)
+- `tests/`
+  - targeted tests for shared batch configuration, run metadata, and batch service behavior
 
-Planned real-time pipeline:
+## Core Data Flows
 
-```
-GTFS-Realtime Feed
-        ↓        
-      Kafka
-        ↓
-      Flink
-   - windowed aggregations
-   - delay metrics
-        ↓
-   Snowflake / Serving Layer
-        ↓
-   Live Dashboard
-```
+### Batch flow
 
----
+1. Airflow or local shell entrypoint starts a batch run
+2. Chicago and Boston batch jobs run independently
+3. GTFS static + OpenStreetMap data are downloaded into city-scoped raw folders
+4. Spark cleaning jobs create city-aware clean Parquet datasets
+5. Spark analytics jobs create route, stop, access, and roadway outputs
+6. Snowflake loader writes clean and analytics outputs into `BATCH_*` tables
+7. FastAPI serves batch results to the shared dashboard
 
-##  Project Structure
+### Live flow
 
-Key folders:
+1. MBTA or CTA vehicle feed is polled
+2. records are normalized into `LiveVehicleState`
+3. normalized records are written to city-specific Kafka raw topics
+4. Flink keeps the latest record per `city + vehicle_id`
+5. latest-state records are written to Kafka latest topics
+6. Redis stores the current latest state for serving
+7. FastAPI exposes REST + WebSocket endpoints
+8. the React dashboard renders the live map
 
-* `jobs/`
+## Key Contracts And Storage Layers
 
-  * ingestion → download scripts
-  * spark → data processing jobs
-  * load → Snowflake loading
-  * validation → data checks
+### Shared live contract
 
-* `data/`
+The central live contract is `LiveVehicleState` in `src/live/models.py`. It is reused across:
 
-  * raw → original GTFS files
-  * processed → cleaned + analytics parquet
+- source normalization
+- Kafka payloads
+- Flink processing
+- Redis storage
+- FastAPI responses
+- frontend rendering
 
-* `sql/`
+### Batch storage layers
 
-  * ddl → table definitions
-  * queries → analysis queries
-  * validation → quality checks
+The batch warehouse is intentionally organized into three layers:
 
-* `dags/`
+- `Raw / source trace`
+  - local source-of-truth files used for replay and debugging
 
-  * Airflow pipelines
+- `Clean tables`
+  - normalized city-aware GTFS and OSM entities such as:
+    - `BATCH_GTFS_STOPS`
+    - `BATCH_GTFS_ROUTES`
+    - `BATCH_GTFS_TRIPS`
+    - `BATCH_GTFS_STOP_TIMES`
+    - `BATCH_OSM_POIS`
+    - `BATCH_OSM_ROADS`
 
-* `src/`
+- `Analytics tables`
+  - denormalized dashboard-facing outputs such as:
+    - `BATCH_STOP_ACTIVITY`
+    - `BATCH_STOP_ACTIVITY_ENRICHED`
+    - `BATCH_ROUTE_ACTIVITY`
+    - `BATCH_STOP_ACTIVITY_BY_ROUTE`
+    - `BATCH_ROUTE_SHAPES`
+    - `BATCH_STOP_POI_ACCESS`
+    - `BATCH_BUSIEST_STOPS_WITH_POI_CONTEXT`
+    - `BATCH_ROUTE_POI_ACCESS`
+    - `BATCH_TRANSIT_ROAD_COVERAGE`
 
-  * reusable logic (connectors, transformers, configs)
+## Running The Project
 
-* `dashboard/`
+### Batch
 
-  * UI layer (future / optional)
+Preferred local batch entrypoint:
 
----
-
-## ⚙ How to Run (Local)
-
-### 1. Setup environment
-
-```
-pip install -r requirements.txt
-```
-
-### 2. Configure Snowflake
-
-Create `.env` with:
-
-```
-SNOWFLAKE_ACCOUNT=...
-SNOWFLAKE_USER=...
-SNOWFLAKE_PRIVATE_KEY_FILE=...
-SNOWFLAKE_ROLE=TRAINING_ROLE
-SNOWFLAKE_WAREHOUSE=
-SNOWFLAKE_DATABASE=
-SNOWFLAKE_SCHEMA=
-```
-
-### 3. Test connection
-
-```
-python -m scripts.test_snowflake_connection
-```
-
----
-
-### 4. Run full pipeline
-
-```
-bash scripts/run_local_pipeline.sh
-```
-
-OR manually:
-
-```
-python jobs/ingestion/download_gtfs.py
-python jobs/spark/build_analytics.py
-python -m jobs.load.load_to_snowflake
+```bash
+bash scripts/run_batch_pipeline.sh all --load-snowflake
 ```
 
----
+Other examples:
 
-##  Data Validation
-
-Example checks:
-
-```sql
-SELECT COUNT(*) FROM CLEAN_GTFS_STOPS;
-SELECT COUNT(*) FROM ANALYTICS_ROUTE_ACTIVITY;
+```bash
+bash scripts/run_batch_pipeline.sh chicago
+bash scripts/run_batch_pipeline.sh boston --load-snowflake
+bash scripts/run_batch_pipeline.sh snowflake
 ```
 
----
+The batch pipeline records:
 
-##  Key Design Decisions
+- `run_id`
+- stage manifests
+- checkpoints
 
-* Used **Snowflake** for scalable analytics storage
-* Used **Spark** for distributed data processing
-* Used **Parquet** for efficient intermediate storage
-* Separated data into **raw → clean → analytics layers**
-* Designed pipeline to be **extendable to streaming (Kafka + Flink)**
+under:
 
----
+- `data/staging/run_metadata/{run_id}/{city}/`
+- `data/staging/checkpoints/{city}/`
 
-## Current Next Step
+### Live
 
-* Integrate GTFS-realtime streaming pipeline
+Preferred local live entrypoint:
 
----
+```bash
+bash scripts/live.sh all
+```
 
----
+This starts:
+
+- Redis
+- Kafka
+- city topics
+- Flink latest-state jobs
+- Kafka latest-to-Redis consumers
+- upstream producers
+- FastAPI
+- React dashboard
+
+Useful variants:
+
+```bash
+bash scripts/live.sh all boston
+bash scripts/live.sh all chicago
+bash scripts/live.sh status
+bash scripts/live.sh logs
+bash scripts/live.sh down
+```
+
+Expected URLs:
+
+- UI: `http://127.0.0.1:5173`
+- API: `http://127.0.0.1:8000`
+- Boston health: `http://127.0.0.1:8000/api/live/boston/health`
+- Chicago health: `http://127.0.0.1:8000/api/live/chicago/health`
+
+## Environment
+
+Important environment variables include:
+
+- `LIVE_CITIES`
+- `REDIS_URL`
+- `LIVE_API_HOST`
+- `LIVE_API_PORT`
+- `LIVE_VEHICLE_TTL_SECONDS`
+- `MBTA_API_KEY`
+- `CTA_BUS_TRACKER_API_KEY`
+- `CTA_TRAIN_TRACKER_API_KEY`
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `KAFKA_TOPIC_PREFIX`
+- `FLINK_KAFKA_CONNECTOR_JAR`
+
+For Snowflake:
+
+- `SNOWFLAKE_USER`
+- `SNOWFLAKE_ACCOUNT`
+- `SNOWFLAKE_WAREHOUSE`
+- `SNOWFLAKE_DATABASE`
+- `SNOWFLAKE_SCHEMA`
+- `SNOWFLAKE_ROLE`
+- `SNOWFLAKE_PRIVATE_KEY_FILE`
+
+See `.env.example` for the expected shape.
+
+## Tests
+
+Current tests cover several of the most important shared components:
+
+- `tests/test_batch_config.py`
+- `tests/test_run_metadata.py`
+- `tests/test_batch_service.py`
+
+Run them with:
+
+```bash
+pytest
+```
+
+## Notes For Reviewers
+
+- The live dashboard is strongest during daytime when upstream feeds are fuller.
+- Boston is the most reliable full live demo city.
+- Chicago live currently works best in bus mode because the train key is invalid.
+- The newer dashboard is the main product surface; `dashboard/app.py` is the legacy Streamlit batch dashboard kept mainly as a reference.
+
+## Additional Documentation
+
+Supporting docs are kept under `docs/`:
+
+- `docs/architecture.md`
+- `docs/pipeline_flow.md`
+- `docs/live_architecture.md`
+
