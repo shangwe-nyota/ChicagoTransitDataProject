@@ -2,18 +2,18 @@
 
 This repository contains our final project for a multi-city transit intelligence platform built around two complementary views of public transit:
 
-- `Batch Atlas`: daily GTFS + OpenStreetMap analytics for Boston and Chicago
+- `Batch Atlas`: daily GTFS + OpenStreetMap analytics for Boston and Chicago via Apache Airflow, Spark, Snowflake to Dashboard
 - `Live Ops`: real-time vehicle tracking for Boston and Chicago through Kafka, Flink, Redis, FastAPI, and a React map UI
 
-The project began as a Chicago GTFS batch analytics pipeline and evolved into a shared multi-city system that now supports:
+The project has evolved into a shared multi-city system that now supports:
 
 - city-aware GTFS + OSM batch processing
 - Snowflake-backed batch serving
 - Boston live vehicle tracking
-- Chicago live bus tracking on the same live stack
+- Chicago live vehicle tracking 
 - one shared dashboard with both batch and live modes
 
-Code is the source of truth. The README is intended to give the teaching team and future developers a reliable onboarding path.
+Code is the source of truth. The README is intended to give future developers a reliable onboarding path.
 
 ## Repository Overview
 
@@ -40,8 +40,6 @@ There are three main layers in the current project:
 
 ## Current Status
 
-What is working today:
-
 - Boston and Chicago batch GTFS + OSM runs
 - city-aware clean Parquet outputs
 - city-aware analytics Parquet outputs
@@ -49,17 +47,11 @@ What is working today:
 - Snowflake-backed batch API endpoints
 - batch mode inside the shared React dashboard
 - Boston live vehicle dashboard
-- Chicago live bus dashboard
+- Chicago live vehicle dashboard
 - Kafka -> Flink -> Kafka latest -> Redis -> FastAPI live path
 - direct-to-Redis fallback live pollers
 - daily Airflow DAG for multi-city batch orchestration
 - local launcher scripts for both batch and live workflows
-
-Known limitations:
-
-- Chicago train live support is code-complete but blocked by the configured CTA train API key
-- some legacy Chicago-only files remain for reference
-- tests exist for important shared pieces, but coverage is still lighter than a production system
 
 ## Project Structure
 
@@ -174,7 +166,9 @@ The batch warehouse is intentionally organized into three layers:
 
 ### Batch
 
-Preferred local batch entrypoint:
+Batch jobs are orchestrated daily via Airflow.
+
+If you would preffer manual runs you may use the local batch entrypoint via:
 
 ```bash
 bash scripts/run_batch_pipeline.sh all --load-snowflake
@@ -276,13 +270,6 @@ Run them with:
 ```bash
 pytest
 ```
-
-## Notes For Reviewers
-
-- The live dashboard is strongest during daytime when upstream feeds are fuller.
-- Boston is the most reliable full live demo city.
-- Chicago live currently works best in bus mode because the train key is invalid.
-- The newer dashboard is the main product surface; `dashboard/app.py` is the legacy Streamlit batch dashboard kept mainly as a reference.
 
 ## Additional Documentation
 
