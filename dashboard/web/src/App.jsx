@@ -34,11 +34,19 @@ const AMENITY_GROUP_COLORS = {
   other: "#94a3b8",
 };
 const ROUTE_MODE_COLORS = {
-  0: "#f59e0b",
+  0: "#facc15",
   1: "#ef4444",
   2: "#60a5fa",
-  3: "#22c55e",
+  3: "#ff832b",
   4: "#14b8a6",
+};
+const LIVE_MODE_COLORS = {
+  0: [250, 204, 21, 225],
+  1: [239, 68, 68, 230],
+  2: [96, 165, 250, 230],
+  3: [255, 131, 43, 225],
+  4: [20, 184, 166, 225],
+  fallback: [148, 163, 184, 215],
 };
 
 const CITY_BATCH_THEMES = {
@@ -97,13 +105,13 @@ function displayStatus(vehicle) {
 }
 
 function vehicleColor(vehicle) {
+  if (vehicle.route_type === 3) {
+    return LIVE_MODE_COLORS[3];
+  }
   if (vehicle.city === "chicago" && vehicle.route_type === 1) {
-    return CTA_LINE_COLORS[vehicle.route_id?.toLowerCase()] ?? [120, 120, 120, 220];
+    return CTA_LINE_COLORS[vehicle.route_id?.toLowerCase()] ?? LIVE_MODE_COLORS[1];
   }
-  if (vehicle.city === "chicago" && vehicle.route_type === 3) {
-    return [255, 131, 43, 220];
-  }
-  return statusColor(vehicle.current_status);
+  return LIVE_MODE_COLORS[vehicle.route_type] || LIVE_MODE_COLORS.fallback;
 }
 
 function vehicleRadius(vehicle) {
@@ -229,6 +237,21 @@ function formatTime(value) {
   return new Date(value).toLocaleTimeString();
 }
 
+function serviceAvailabilityLabel(avgDailyValue, maxValue, feedPeriodValue = null) {
+  const ratio = maxValue > 0 ? Number(avgDailyValue || 0) / maxValue : 0;
+  const auditSuffix = feedPeriodValue === null ? "" : ` · ${formatCompact(feedPeriodValue)} feed-period records`;
+  if (ratio >= 0.82) {
+    return `Very high availability · ${formatNumber(avgDailyValue)} avg/day${auditSuffix}`;
+  }
+  if (ratio >= 0.55) {
+    return `High availability · ${formatNumber(avgDailyValue)} avg/day${auditSuffix}`;
+  }
+  if (ratio >= 0.28) {
+    return `Moderate availability · ${formatNumber(avgDailyValue)} avg/day${auditSuffix}`;
+  }
+  return `Lower availability · ${formatNumber(avgDailyValue)} avg/day${auditSuffix}`;
+}
+
 function routeLabel(route) {
   if (!route) {
     return "Unknown route";
@@ -263,14 +286,87 @@ function amenityGroupLabel(group) {
   return labels[group] || group || "Other amenities";
 }
 
+const POI_CATEGORY_LABELS = {
+  restaurant: "restaurants",
+  fast_food: "quick food",
+  cafe: "cafes",
+  school: "schools",
+  university: "universities",
+  college: "colleges",
+  hospital: "hospitals",
+  clinic: "clinics",
+  pharmacy: "pharmacies",
+  doctors: "doctors",
+  supermarket: "supermarkets",
+  convenience: "convenience stores",
+  greengrocer: "grocers",
+  library: "libraries",
+  bank: "banks",
+  post_office: "post offices",
+  community_centre: "community centers",
+  police: "police",
+  fire_station: "fire stations",
+  place_of_worship: "places of worship",
+  park: "parks",
+  playground: "playgrounds",
+  garden: "gardens",
+  stadium: "stadiums",
+  museum: "museums",
+};
+
+function poiCategoryLabels(categories, limit = 4) {
+  if (!categories) {
+    return [];
+  }
+  return String(categories)
+    .split(",")
+    .map((category) => category.trim())
+    .filter(Boolean)
+    .map((category) => POI_CATEGORY_LABELS[category] || category.replaceAll("_", " "))
+    .slice(0, limit);
+}
+
+function dailyNeedsSummary(row) {
+  const parts = [];
+  if (Number(row.food_poi_count_within_400m || 0) > 0) {
+    parts.push(`${formatNumber(row.food_poi_count_within_400m)} food options`);
+  }
+  if (Number(row.critical_service_poi_count_within_400m || 0) > 0) {
+    parts.push(`${formatNumber(row.critical_service_poi_count_within_400m)} schools, healthcare, or groceries`);
+  }
+  if (Number(row.park_poi_count_within_400m || 0) > 0) {
+    parts.push(`${formatNumber(row.park_poi_count_within_400m)} park/garden/play features`);
+  }
+  return parts.length ? parts.join(" · ") : "No matched daily-needs POIs within 400m";
+}
+
 function batchLensTitle(lens) {
-  return lens === "access" ? "Neighborhood access" : "Service intensity";
+  return lens === "access" ? "Daily-needs access" : "Service availability";
 }
 
 function batchLensDescription(lens) {
   return lens === "access"
-    ? "Highlights stops with the richest mix of daily destinations within a short walk."
-    : "Highlights where scheduled service concentrates most heavily across the network.";
+    ? "Highlights stops where riders can reach food, groceries, healthcare, schools, civic places, and mapped open-space features within about a five-minute walk."
+    : "Highlights where the schedule creates the most chances to catch transit. Higher values usually mean shorter waits, more transfer options, or overlapping routes.";
+}
+
+function liveLegendItems(citySlug) {
+  if (citySlug === "chicago") {
+    return [
+      { color: "#ff832b", label: "Bus", description: "Buses use one stable orange across cities." },
+      { color: "#00a1de", label: "CTA rail", description: "Rail uses CTA line colors when train data is available." },
+      { color: "#60a5fa", label: "Commuter rail", description: "Regional rail uses blue when present." },
+      { color: "#14b8a6", label: "Ferry / water transit", description: "Water transit uses teal when present." },
+    ];
+  }
+
+  return [
+    { color: "#ff832b", label: "Bus", description: "Buses use one stable orange across cities." },
+    { color: "#ef4444", label: "Subway", description: "Heavy rail/subway vehicles use red." },
+    { color: "#facc15", label: "Light rail", description: "Light rail uses yellow." },
+    { color: "#60a5fa", label: "Commuter rail", description: "Commuter rail uses blue." },
+    { color: "#14b8a6", label: "Ferry", description: "Ferries use teal." },
+  ];
 }
 
 function batchCityTheme(citySlug) {
@@ -313,7 +409,7 @@ function buildConicGradient(rows, valueKey, colorForRow) {
 }
 
 function batchStopColor(stop, lens, maxValue) {
-  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
+  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.avg_daily_stop_events ?? stop.trip_count ?? 0);
   const ratio = maxValue > 0 ? score / maxValue : 0;
 
   if (lens === "access") {
@@ -330,13 +426,13 @@ function batchStopColor(stop, lens, maxValue) {
 }
 
 function batchStopRadius(stop, lens, maxValue) {
-  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.trip_count ?? 0);
+  const score = lens === "access" ? (stop.poi_count_within_400m ?? 0) : (stop.avg_daily_stop_events ?? stop.trip_count ?? 0);
   const ratio = maxValue > 0 ? score / maxValue : 0;
   return Math.max(42, Math.min(180, 42 + ratio * 120));
 }
 
 function rowValue(row, lens) {
-  return lens === "access" ? row.poi_count_within_400m ?? 0 : row.trip_count ?? 0;
+  return lens === "access" ? row.poi_count_within_400m ?? 0 : row.avg_daily_stop_events ?? row.trip_count ?? 0;
 }
 
 function summarizeRouteStopsForDisplay(stops) {
@@ -350,16 +446,19 @@ function summarizeRouteStopsForDisplay(stops) {
         ...stop,
         stop_instances: 1,
         trip_count: Number(stop.trip_count || 0),
+        avg_daily_stop_events: Number(stop.avg_daily_stop_events || 0),
         poi_count_within_400m: Number(stop.poi_count_within_400m || 0),
         food_poi_count_within_400m: Number(stop.food_poi_count_within_400m || 0),
         critical_service_poi_count_within_400m: Number(stop.critical_service_poi_count_within_400m || 0),
         park_poi_count_within_400m: Number(stop.park_poi_count_within_400m || 0),
+        poi_categories: stop.poi_categories || "",
       });
       continue;
     }
 
     existing.stop_instances += 1;
     existing.trip_count += Number(stop.trip_count || 0);
+    existing.avg_daily_stop_events += Number(stop.avg_daily_stop_events || 0);
     existing.poi_count_within_400m = Math.max(existing.poi_count_within_400m, Number(stop.poi_count_within_400m || 0));
     existing.food_poi_count_within_400m = Math.max(existing.food_poi_count_within_400m, Number(stop.food_poi_count_within_400m || 0));
     existing.critical_service_poi_count_within_400m = Math.max(
@@ -367,6 +466,9 @@ function summarizeRouteStopsForDisplay(stops) {
       Number(stop.critical_service_poi_count_within_400m || 0),
     );
     existing.park_poi_count_within_400m = Math.max(existing.park_poi_count_within_400m, Number(stop.park_poi_count_within_400m || 0));
+    existing.poi_categories = Array.from(
+      new Set([...(existing.poi_categories || "").split(","), ...(stop.poi_categories || "").split(",")].map((category) => category.trim()).filter(Boolean)),
+    ).join(", ");
   }
 
   return Array.from(grouped.values()).sort((left, right) => {
@@ -496,6 +598,31 @@ function LegendCard({ title, caption, items }) {
   );
 }
 
+function BusinessMeaningCard() {
+  return (
+    <section className="insight-card meaning-card">
+      <div className="insight-header">
+        <h3>How to read this</h3>
+        <p>Each chart is translated into a rider or planner question, not just a database count.</p>
+      </div>
+      <div className="meaning-grid">
+        <div>
+          <strong>Service availability</strong>
+          <span>Where does the schedule create the most chances to board or transfer?</span>
+        </div>
+        <div>
+          <strong>Daily-needs access</strong>
+          <span>Which stops put riders within walking distance of food, groceries, schools, healthcare, parks, and civic places?</span>
+        </div>
+        <div>
+          <strong>Corridor access score</strong>
+          <span>A route-level score that counts stop-place relationships, so the same place can matter to multiple nearby stops.</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function BarChartCard({ title, caption, rows, labelKey, valueKey, formatLabel, formatValue, color, tone = "" }) {
   const maxValue = rows.reduce((currentMax, row) => Math.max(currentMax, Number(row[valueKey] || 0)), 0);
 
@@ -567,16 +694,27 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
     }))
     .filter((path) => path.path.length >= 2);
   const validStops = (detail?.stops ?? []).filter((row) => hasFiniteCoordinates(row.stop_lon, row.stop_lat));
-  const routeMapViewState = routeViewStateFromDetail(detail, fallbackCity);
+  const initialRouteMapViewState = routeViewStateFromDetail(detail, fallbackCity);
+  const routeMapResetKey = [
+    fallbackCity?.slug || "city",
+    detail?.summary?.route_id || detail?.stops?.[0]?.route_id || "route",
+    validPaths.length,
+    validStops.length,
+  ].join(":");
+  const [routeMapViewState, setRouteMapViewState] = useState(initialRouteMapViewState);
+
+  useEffect(() => {
+    setRouteMapViewState(initialRouteMapViewState);
+  }, [routeMapResetKey]);
   const haloLayer = new PathLayer({
     id: "route-spotlight-halo",
     data: validPaths,
     getPath: (row) => row.path,
-    getColor: theme.pathHalo,
+    getColor: theme.path,
     getWidth: 10,
     widthMinPixels: 5,
     widthMaxPixels: 12,
-    opacity: 0.35,
+    opacity: 0.22,
     pickable: false,
   });
   const pathLayer = new PathLayer({
@@ -593,7 +731,7 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
     id: "route-spotlight-stops",
     data: validStops,
     getPosition: (row) => [Number(row.stop_lon), Number(row.stop_lat)],
-    getFillColor: (row) => (row.poi_count_within_400m ? theme.stopFill : theme.pathHalo),
+    getFillColor: theme.path,
     getLineColor: theme.stopStroke,
     getRadius: (row) => Math.max(50, Math.min(140, 32 + Math.sqrt(Number(row.trip_count || 0)) * 4)),
     radiusMinPixels: 5,
@@ -607,6 +745,7 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
     <div className="route-map-shell">
       <DeckGL
         viewState={routeMapViewState}
+        onViewStateChange={({ viewState }) => setRouteMapViewState(viewState)}
         controller={true}
         layers={[haloLayer, pathLayer, stopLayer]}
         getTooltip={({ object }) =>
@@ -614,8 +753,8 @@ function RouteSpotlightMap({ detail, fallbackCity, theme }) {
             ? {
                 html: `
                   <div class="tooltip-title">${object.stop_name || "Route corridor"}</div>
-                  ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
-                  ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
+                  ${object.avg_daily_stop_events ? `<div>Avg daily service: ${formatNumber(object.avg_daily_stop_events)}</div>` : ""}
+                  ${object.poi_count_within_400m ? `<div>Daily-needs places nearby: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
                 `,
               }
             : null
@@ -663,7 +802,7 @@ function CoverageCard({ rows }) {
     <section className="insight-card">
       <div className="insight-header">
         <h3>Transit coverage by road type</h3>
-        <p>How much of each road class sits within reach of a transit stop.</p>
+        <p>Share of modeled road segments whose midpoint is within 200m of any transit stop.</p>
       </div>
       <div className="coverage-stack">
         {rows.map((row) => (
@@ -676,7 +815,7 @@ function CoverageCard({ rows }) {
               <div className="coverage-bar-fill" style={{ width: `${Math.min(Number(row.coverage_pct || 0), 100)}%` }} />
             </div>
             <small>
-              {formatNumber(row.road_segments_near_transit)} / {formatNumber(row.total_road_segments)} segments
+              {formatNumber(row.road_segments_near_transit)} / {formatNumber(row.total_road_segments)} segments within 200m of transit
             </small>
           </div>
         ))}
@@ -690,7 +829,7 @@ function ComparisonCard({ city }) {
     <article className="comparison-card">
       <div className="comparison-heading">
         <p>{city.display_name}</p>
-        <span>{formatCompact(city.total_stop_events)} stop events</span>
+        <span>{formatNumber(city.avg_daily_stop_events)} avg daily service opportunities</span>
       </div>
       <div className="comparison-grid">
         <div>
@@ -702,7 +841,7 @@ function ComparisonCard({ city }) {
           <strong>{formatNumber(city.total_routes)}</strong>
         </div>
         <div>
-          <span>Avg amenities / stop</span>
+          <span>Daily-needs / stop</span>
           <strong>{Number(city.avg_poi_access_per_stop || 0).toFixed(1)}</strong>
         </div>
         <div>
@@ -810,9 +949,15 @@ function LiveWorkspace({
           <ul className="compact-list">
             <li>MapLibre basemap with deck.gl vehicle rendering.</li>
             <li>Boston shows MBTA buses, rail, and subway.</li>
-            <li>Chicago currently looks strongest as a CTA bus live mode.</li>
+            <li>Chicago can show CTA buses and trains when valid CTA credentials are configured.</li>
           </ul>
         </div>
+
+        <LegendCard
+          title="Live map legend"
+          caption="Colors explain either the reported vehicle status or, for Chicago rail, the CTA line color."
+          items={liveLegendItems(selectedCity)}
+        />
 
         {errorMessage ? <div className="error-banner">{errorMessage}</div> : null}
       </aside>
@@ -915,12 +1060,14 @@ function BatchWorkspace({
   const routeModeMix = (batchDashboard?.route_mode_mix ?? []).slice(0, 5);
   const topAmenityStops = (batchDashboard?.top_stops_by_poi ?? []).slice(0, 8);
   const topActivityStops = (batchDashboard?.top_stops_by_activity ?? []).slice(0, 8);
+  const topActivityMax = topActivityStops.reduce((currentMax, row) => Math.max(currentMax, Number(row.avg_daily_stop_events || row.trip_count || 0)), 0);
+  const routeStopDailyMax = Math.max(...routeStopsForDisplay.map((stop) => Number(stop.avg_daily_stop_events || stop.trip_count || 0)), 0);
   const lensLegend =
     batchLens === "access"
       ? [
           { color: BATCH_ACCESS_SCALE[0], label: "Lower access", description: "Fewer nearby daily destinations around the stop." },
           { color: BATCH_ACCESS_SCALE[2], label: "Balanced access", description: "A healthy mix of food, services, and everyday destinations." },
-          { color: BATCH_ACCESS_SCALE[3], label: "Rich access", description: "Dense clusters of amenities within a short walk." },
+          { color: BATCH_ACCESS_SCALE[3], label: "Rich access", description: "Dense clusters of daily-needs places within a short walk." },
         ]
       : [
           { color: BATCH_ACTIVITY_SCALE[0], label: "Lower service", description: "Stops with lighter scheduled intensity." },
@@ -1031,10 +1178,10 @@ function BatchWorkspace({
         </div>
 
         <div className="stats-grid">
-          <StatCard label="Stops in batch graph" value={formatNumber(batchDashboard?.overview?.total_stops)} accent="warm" />
+          <StatCard label="Transit access points" value={formatNumber(batchDashboard?.overview?.total_stops)} accent="warm" />
           <StatCard label="Routes modeled" value={formatNumber(batchDashboard?.overview?.total_routes)} accent="cool" />
-          <StatCard label="Scheduled stop events" value={formatCompact(batchDashboard?.overview?.total_stop_events)} accent="gold" />
-          <StatCard label="Avg amenities per stop" value={Number(batchDashboard?.overview?.avg_poi_access_per_stop || 0).toFixed(1)} accent="green" />
+          <StatCard label="Avg daily service opportunities" value={formatNumber(batchDashboard?.overview?.avg_daily_stop_events)} accent="gold" />
+          <StatCard label="Daily-needs places / stop" value={Number(batchDashboard?.overview?.avg_poi_access_per_stop || 0).toFixed(1)} accent="green" />
         </div>
 
         <div className="panel-block">
@@ -1058,17 +1205,18 @@ function BatchWorkspace({
             <div className="snapshot-card">
               <span>Busiest stop</span>
               <strong>{batchDashboard?.overview?.busiest_stop?.stop_name || "Loading"}</strong>
-              <small>{formatCompact(batchDashboard?.overview?.busiest_stop?.trip_count)} stop events</small>
+              <small>{formatNumber(batchDashboard?.overview?.busiest_stop?.avg_daily_stop_events)} avg daily opportunities</small>
             </div>
             <div className="snapshot-card">
               <span>Most connected route</span>
               <strong>{routeLabel(batchDashboard?.overview?.busiest_route)}</strong>
-              <small>{formatCompact(batchDashboard?.overview?.busiest_route?.stop_event_count)} stop events</small>
+              <small>{formatNumber(batchDashboard?.overview?.busiest_route?.avg_daily_stop_events)} avg daily opportunities</small>
             </div>
             <div className="snapshot-card">
-              <span>Top amenity stop</span>
+              <span>Best daily-needs stop</span>
               <strong>{batchDashboard?.overview?.poi_leader?.stop_name || "Loading"}</strong>
-              <small>{formatNumber(batchDashboard?.overview?.poi_leader?.poi_count_within_400m)} amenities within 400m</small>
+              <small>{formatNumber(batchDashboard?.overview?.poi_leader?.poi_count_within_400m)} daily-needs places within 400m</small>
+              <small>{dailyNeedsSummary(batchDashboard?.overview?.poi_leader || {})}</small>
             </div>
           </div>
         </div>
@@ -1095,8 +1243,8 @@ function BatchWorkspace({
                   ? {
                       html: `
                         <div class="tooltip-title">${object.stop_name || object.route_long_name || object.shape_id || "Batch feature"}</div>
-                        ${object.trip_count ? `<div>Scheduled stop events: ${formatNumber(object.trip_count)}</div>` : ""}
-                        ${object.poi_count_within_400m ? `<div>Nearby amenities: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
+                        ${object.avg_daily_stop_events ? `<div>Avg daily service: ${formatNumber(object.avg_daily_stop_events)}</div>` : ""}
+                        ${object.poi_count_within_400m ? `<div>Daily-needs places nearby: ${formatNumber(object.poi_count_within_400m)}</div>` : ""}
                         ${object.food_poi_count_within_400m ? `<div>Food access: ${formatNumber(object.food_poi_count_within_400m)}</div>` : ""}
                       `,
                     }
@@ -1136,48 +1284,50 @@ function BatchWorkspace({
             items={lensLegend}
           />
 
+          <BusinessMeaningCard />
+
           <BarChartCard
-            title="Top stops by service intensity"
-            caption="The busiest stops by scheduled stop events in the current city."
+            title="Best places to catch frequent service"
+            caption="Stops with the strongest relative service availability. Keeps the exact feed-period record count for auditability."
             rows={topActivityStops}
             labelKey="stop_name"
-            valueKey="trip_count"
-            formatValue={(value) => `${formatCompact(value)} stop events`}
+            valueKey="avg_daily_stop_events"
+            formatValue={(value, row) => serviceAvailabilityLabel(value || row.trip_count, topActivityMax, row.trip_count)}
             color={() => cityTheme.accent}
             tone="tone-service"
           />
 
           <BarChartCard
-            title="Top stops by neighborhood access"
-            caption="Stops with the strongest nearby mix of destinations and daily essentials."
+            title="Best stops for daily needs"
+            caption="Stops with the strongest nearby mix of food, groceries, schools, healthcare, civic places, and mapped open-space features."
             rows={topAmenityStops}
             labelKey="stop_name"
             valueKey="poi_count_within_400m"
-            formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.food_poi_count_within_400m || 0)} food`}
+            formatValue={(value, row) => `${formatNumber(value)} places · ${dailyNeedsSummary(row)}`}
             color={() => cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[3]}
             tone="tone-access"
           />
 
           <BarChartCard
-            title={batchLens === "access" ? "Routes with the strongest neighborhood access" : "Routes with the most service intensity"}
+            title={batchLens === "access" ? "Routes that pass the most daily needs" : "Routes with the most service opportunities"}
             caption={batchLens === "access"
-              ? "Which routes touch the richest urban context across their stop footprint."
-              : "Which routes carry the most scheduled stop activity overall."}
+              ? "Which corridors connect riders to the richest walkable context across their stop footprint."
+              : "Which corridors create the most scheduled chances to board or transfer across the full GTFS feed period."}
             rows={topRoutesForLens.slice(0, 8)}
             labelKey="route_short_name"
-            valueKey={batchLens === "access" ? "total_poi_access" : "stop_event_count"}
+            valueKey={batchLens === "access" ? "total_poi_access" : "avg_daily_stop_events"}
             formatLabel={(_, row) => row.route_short_name || row.route_id}
             formatValue={(value, row) =>
               batchLens === "access"
-                ? `${formatNumber(value)} amenity touches, ${Number(row.avg_poi_access_per_stop || 0).toFixed(1)} avg per stop`
-                : `${formatCompact(value)} stop events across ${formatNumber(row.distinct_stop_count)} stops`}
+                ? `${formatNumber(value)} stop-place connections, ${Number(row.avg_poi_access_per_stop || 0).toFixed(1)} avg per stop`
+                : `${formatNumber(value)} avg daily opportunities across ${formatNumber(row.distinct_stop_count)} stops`}
             color={() => batchLens === "access" ? cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[2] : cityTheme.accent}
             tone={batchLens === "access" ? "tone-access" : "tone-service"}
           />
 
           <DonutBreakdownCard
-            title="Amenity mix around transit"
-            caption="What kinds of nearby places are shaping the batch access story in this city."
+            title="Collected OSM amenity mix"
+            caption="The OpenStreetMap places collected for this city. Route access scores may count the same place near multiple stops."
             rows={amenityMix}
             valueKey="amenity_count"
             labelForRow={(row) => amenityGroupLabel(row.poi_group)}
@@ -1206,25 +1356,25 @@ function BatchWorkspace({
               <>
                 <div className="route-summary-grid">
                   <div>
-                    <span>Stop events</span>
-                    <strong>{formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)}</strong>
+                    <span>Avg daily service</span>
+                    <strong>{formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.avg_daily_stop_events)}</strong>
                   </div>
                   <div>
                     <span>Distinct trips</span>
                     <strong>{formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.distinct_trip_count)}</strong>
                   </div>
                   <div>
-                    <span>Total access score</span>
+                    <span>Corridor access score</span>
                     <strong>{formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)}</strong>
                   </div>
                   <div>
-                    <span>Avg amenities / stop</span>
+                    <span>Daily-needs / stop</span>
                     <strong>{Number((batchRouteDetail?.summary || batchRoutePreview?.summary)?.avg_poi_access_per_stop || 0).toFixed(1)}</strong>
                   </div>
                 </div>
                 <p className="route-story-copy">
                   {selectedRoute
-                    ? `${routeLabel(selectedRoute)} blends ${formatCompact((batchRouteDetail?.summary || batchRoutePreview?.summary)?.stop_event_count)} scheduled stop events with ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)} nearby amenities across its corridor.`
+                    ? `${routeLabel(selectedRoute)} averages ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.avg_daily_stop_events)} daily service opportunities and has a ${formatNumber((batchRouteDetail?.summary || batchRoutePreview?.summary)?.total_poi_access || 0)} corridor access score. In plain English: it combines transit frequency with nearby daily needs.`
                     : "Select a route to read its corridor story."}
                 </p>
                 <BatchRenderBoundary
@@ -1237,26 +1387,26 @@ function BatchWorkspace({
                 </BatchRenderBoundary>
                 <div className="route-analytics-grid">
                   <BarChartCard
-                    title="Busiest stops on this route"
-                    caption="The stops where this route contributes the most scheduled activity."
+                    title="Most useful boarding points"
+                    caption="The stops where this route creates the most scheduled chances to board or transfer."
                     rows={routeStopsForDisplay.slice(0, 8)}
                     labelKey="stop_name"
-                    valueKey="trip_count"
+                    valueKey="avg_daily_stop_events"
                     formatLabel={(_, row) => stopDisplayLabel(row)}
-                    formatValue={(value) => `${formatNumber(value)} stop events`}
+                    formatValue={(value, row) => serviceAvailabilityLabel(value || row.trip_count, routeStopDailyMax, row.trip_count)}
                     color={() => cityTheme.accent}
                     tone="tone-service"
                   />
                   <BarChartCard
-                    title="Best access points on this route"
-                    caption="Where this route connects riders to the strongest nearby mix of amenities."
+                    title="Best daily-needs access points"
+                    caption="Where this route connects riders to the strongest nearby mix of food, essentials, civic places, and mapped open-space features."
                     rows={[...routeStopsForDisplay]
                       .sort((left, right) => Number(right.poi_count_within_400m || 0) - Number(left.poi_count_within_400m || 0))
                       .slice(0, 8)}
                     labelKey="stop_name"
                     valueKey="poi_count_within_400m"
                     formatLabel={(_, row) => stopDisplayLabel(row)}
-                    formatValue={(value, row) => `${formatNumber(value)} amenities, ${formatNumber(row.critical_service_poi_count_within_400m || 0)} essential`}
+                    formatValue={(value, row) => `${formatNumber(value)} places · ${dailyNeedsSummary(row)}`}
                     color={() => cityTheme.pathHalo ? `rgb(${cityTheme.pathHalo.slice(0, 3).join(" ")})` : BATCH_ACCESS_SCALE[3]}
                     tone="tone-access"
                   />
@@ -1266,12 +1416,15 @@ function BatchWorkspace({
                     <div className="route-stop-row" key={`${stop.route_id}-${stop.stop_name}`}>
                       <div>
                         <strong>{stopDisplayLabel(stop)}</strong>
-                        <span>{formatNumber(stop.trip_count)} stop events</span>
+                        <span>{serviceAvailabilityLabel(stop.avg_daily_stop_events || stop.trip_count, routeStopDailyMax, stop.trip_count)}</span>
                       </div>
                       <div className="route-stop-badges">
-                        <span>{formatNumber(stop.poi_count_within_400m || 0)} amenities</span>
+                        <span>{formatNumber(stop.poi_count_within_400m || 0)} daily-needs places</span>
                         <span>{formatNumber(stop.food_poi_count_within_400m || 0)} food</span>
-                        <span>{formatNumber(stop.critical_service_poi_count_within_400m || 0)} essential services</span>
+                        <span>{formatNumber(stop.critical_service_poi_count_within_400m || 0)} schools/health/grocery</span>
+                        {poiCategoryLabels(stop.poi_categories, 3).map((category) => (
+                          <span key={`${stop.stop_id}-${category}`}>{category}</span>
+                        ))}
                       </div>
                     </div>
                   ))}
@@ -1924,7 +2077,7 @@ function App() {
           <p className="hero-copy">
             {mode === "live"
               ? "Track vehicles on a live basemap, switch cities instantly, and keep the streaming story front and center for the presentation."
-              : "Explore GTFS + OSM analytics through a warehouse-backed map experience: busiest stops, route intensity, amenity access, corridor context, and city comparison in one place."}
+              : "Explore warehouse-backed transit intelligence: where service is easiest to catch, where daily needs are most walkable, and which corridors combine both."}
           </p>
         </div>
         <div className={`connection-pill ${mode === "live" ? `connection-${connectionState}` : "connection-batch"}`}>

@@ -115,6 +115,7 @@ class SnowflakeBatchService:
                 stop_lat,
                 stop_lon,
                 trip_count,
+                avg_daily_stop_events,
                 poi_count_within_400m,
                 food_poi_count_within_400m,
                 critical_service_poi_count_within_400m,
@@ -126,7 +127,7 @@ class SnowflakeBatchService:
                 poi_categories
             FROM CHICAGO_TRANSIT.BATCH_BUSIEST_STOPS_WITH_POI_CONTEXT
             WHERE city = {self._sql_string(city_slug)}
-            ORDER BY trip_count DESC, poi_count_within_400m DESC
+            ORDER BY avg_daily_stop_events DESC, trip_count DESC, poi_count_within_400m DESC
             LIMIT {int(stop_limit)}
             """,
             cache_key=f"dashboard:{city_slug}:top_stops_activity:{stop_limit}",
@@ -165,10 +166,11 @@ class SnowflakeBatchService:
                 route_type,
                 stop_event_count,
                 distinct_trip_count,
-                distinct_stop_count
+                distinct_stop_count,
+                avg_daily_stop_events
             FROM CHICAGO_TRANSIT.BATCH_ROUTE_ACTIVITY
             WHERE city = {self._sql_string(city_slug)}
-            ORDER BY stop_event_count DESC, distinct_trip_count DESC
+            ORDER BY avg_daily_stop_events DESC, stop_event_count DESC, distinct_trip_count DESC
             LIMIT {int(route_limit)}
             """,
             cache_key=f"dashboard:{city_slug}:top_routes_activity:{route_limit}",
@@ -264,10 +266,11 @@ class SnowflakeBatchService:
                 route_type,
                 stop_event_count,
                 distinct_trip_count,
-                distinct_stop_count
+                distinct_stop_count,
+                avg_daily_stop_events
             FROM CHICAGO_TRANSIT.BATCH_ROUTE_ACTIVITY
             WHERE city = {self._sql_string(city_slug)}
-            ORDER BY stop_event_count DESC, route_short_name ASC, route_long_name ASC
+            ORDER BY avg_daily_stop_events DESC, stop_event_count DESC, route_short_name ASC, route_long_name ASC
             LIMIT {int(limit)}
             """,
             cache_key=f"routes:{city_slug}:{limit}",
@@ -326,6 +329,7 @@ class SnowflakeBatchService:
                 ra.stop_event_count,
                 ra.distinct_trip_count,
                 ra.distinct_stop_count,
+                ra.avg_daily_stop_events,
                 rp.stop_count,
                 rp.total_poi_access,
                 rp.avg_poi_access_per_stop,
@@ -337,7 +341,7 @@ class SnowflakeBatchService:
             LEFT JOIN CHICAGO_TRANSIT.BATCH_ROUTE_POI_ACCESS rp
               ON ra.city = rp.city AND ra.route_id = rp.route_id
             WHERE ra.city = {self._sql_string(city_slug)}
-            ORDER BY ra.stop_event_count DESC, ra.route_id ASC
+            ORDER BY ra.avg_daily_stop_events DESC, ra.stop_event_count DESC, ra.route_id ASC
             """,
             cache_key=f"route_preview_summary:{city_slug}",
         )
@@ -354,15 +358,21 @@ class SnowflakeBatchService:
                 sar.stop_lat,
                 sar.stop_lon,
                 sar.trip_count,
+                sar.avg_daily_stop_events,
                 spa.poi_count_within_400m,
                 spa.food_poi_count_within_400m,
                 spa.critical_service_poi_count_within_400m,
-                spa.park_poi_count_within_400m
+                spa.park_poi_count_within_400m,
+                spa.nearest_school_m,
+                spa.nearest_hospital_m,
+                spa.nearest_grocery_m,
+                spa.nearest_park_m,
+                spa.poi_categories
             FROM CHICAGO_TRANSIT.BATCH_STOP_ACTIVITY_BY_ROUTE sar
             LEFT JOIN CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS spa
               ON sar.city = spa.city AND sar.stop_id = spa.stop_id
             WHERE sar.city = {self._sql_string(city_slug)}
-            ORDER BY sar.route_id ASC, sar.trip_count DESC, spa.poi_count_within_400m DESC
+            ORDER BY sar.route_id ASC, sar.avg_daily_stop_events DESC, sar.trip_count DESC, spa.poi_count_within_400m DESC
             """,
             cache_key=f"route_preview_stops:{city_slug}",
         )
@@ -414,34 +424,49 @@ class SnowflakeBatchService:
                 (SELECT COUNT(*) FROM CHICAGO_TRANSIT.BATCH_GTFS_STOPS WHERE city = {self._sql_string(city)}) AS total_stops,
                 (SELECT COUNT(*) FROM CHICAGO_TRANSIT.BATCH_ROUTE_ACTIVITY WHERE city = {self._sql_string(city)}) AS total_routes,
                 (SELECT COALESCE(SUM(trip_count), 0) FROM CHICAGO_TRANSIT.BATCH_STOP_ACTIVITY WHERE city = {self._sql_string(city)}) AS total_stop_events,
+                (SELECT ROUND(COALESCE(SUM(avg_daily_stop_events), 0), 2) FROM CHICAGO_TRANSIT.BATCH_STOP_ACTIVITY WHERE city = {self._sql_string(city)}) AS avg_daily_stop_events,
                 (SELECT COUNT(*) FROM CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS WHERE city = {self._sql_string(city)}) AS stops_with_poi_context,
-                (SELECT ROUND(AVG(poi_count_within_400m), 2) FROM CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS WHERE city = {self._sql_string(city)}) AS avg_poi_access_per_stop
+                (
+                    SELECT ROUND(
+                        COALESCE(SUM(poi_count_within_400m), 0)
+                        / NULLIF((SELECT COUNT(*) FROM CHICAGO_TRANSIT.BATCH_GTFS_STOPS WHERE city = {self._sql_string(city)}), 0),
+                        2
+                    )
+                    FROM CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS
+                    WHERE city = {self._sql_string(city)}
+                ) AS avg_poi_access_per_stop
             """,
             cache_key=f"overview:{city}:totals",
         )
         busiest_stop_rows = self._query_records(
             f"""
-            SELECT stop_name, trip_count
+            SELECT stop_name, trip_count, avg_daily_stop_events
             FROM CHICAGO_TRANSIT.BATCH_STOP_ACTIVITY_ENRICHED
             WHERE city = {self._sql_string(city)}
-            ORDER BY trip_count DESC
+            ORDER BY avg_daily_stop_events DESC, trip_count DESC
             LIMIT 1
             """,
             cache_key=f"overview:{city}:busiest_stop",
         )
         busiest_route_rows = self._query_records(
             f"""
-            SELECT route_id, route_short_name, route_long_name, stop_event_count
+            SELECT route_id, route_short_name, route_long_name, stop_event_count, avg_daily_stop_events
             FROM CHICAGO_TRANSIT.BATCH_ROUTE_ACTIVITY
             WHERE city = {self._sql_string(city)}
-            ORDER BY stop_event_count DESC
+            ORDER BY avg_daily_stop_events DESC, stop_event_count DESC
             LIMIT 1
             """,
             cache_key=f"overview:{city}:busiest_route",
         )
         poi_leader_rows = self._query_records(
             f"""
-            SELECT stop_name, poi_count_within_400m, food_poi_count_within_400m
+            SELECT
+                stop_name,
+                poi_count_within_400m,
+                food_poi_count_within_400m,
+                critical_service_poi_count_within_400m,
+                park_poi_count_within_400m,
+                poi_categories
             FROM CHICAGO_TRANSIT.BATCH_STOP_POI_ACCESS
             WHERE city = {self._sql_string(city)}
             ORDER BY poi_count_within_400m DESC, food_poi_count_within_400m DESC
@@ -454,6 +479,7 @@ class SnowflakeBatchService:
             "total_stops": totals.get("total_stops", 0),
             "total_routes": totals.get("total_routes", 0),
             "total_stop_events": totals.get("total_stop_events", 0),
+            "avg_daily_stop_events": totals.get("avg_daily_stop_events", 0),
             "stops_with_poi_context": totals.get("stops_with_poi_context", 0),
             "avg_poi_access_per_stop": totals.get("avg_poi_access_per_stop", 0),
             "busiest_stop": busiest_stop_rows[0] if busiest_stop_rows else None,

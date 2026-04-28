@@ -55,7 +55,8 @@ CREATE OR REPLACE TABLE ANALYTICS_ROUTE_SHAPES (
 CREATE OR REPLACE TABLE BATCH_STOP_ACTIVITY (
     city STRING,
     stop_id STRING,
-    trip_count INTEGER
+    trip_count INTEGER,
+    avg_daily_stop_events FLOAT
 );
 
 CREATE OR REPLACE TABLE BATCH_STOP_ACTIVITY_ENRICHED (
@@ -65,6 +66,7 @@ CREATE OR REPLACE TABLE BATCH_STOP_ACTIVITY_ENRICHED (
     stop_lat FLOAT,
     stop_lon FLOAT,
     trip_count INTEGER,
+    avg_daily_stop_events FLOAT,
     location_type INTEGER,
     parent_station STRING
 );
@@ -77,7 +79,8 @@ CREATE OR REPLACE TABLE BATCH_ROUTE_ACTIVITY (
     route_type INTEGER,
     stop_event_count INTEGER,
     distinct_trip_count INTEGER,
-    distinct_stop_count INTEGER
+    distinct_stop_count INTEGER,
+    avg_daily_stop_events FLOAT
 );
 
 CREATE OR REPLACE TABLE BATCH_STOP_ACTIVITY_BY_ROUTE (
@@ -90,7 +93,8 @@ CREATE OR REPLACE TABLE BATCH_STOP_ACTIVITY_BY_ROUTE (
     stop_name STRING,
     stop_lat FLOAT,
     stop_lon FLOAT,
-    trip_count INTEGER
+    trip_count INTEGER,
+    avg_daily_stop_events FLOAT
 );
 
 CREATE OR REPLACE TABLE BATCH_ROUTE_SHAPES (
@@ -129,6 +133,7 @@ CREATE OR REPLACE TABLE BATCH_BUSIEST_STOPS_WITH_POI_CONTEXT (
     stop_lat FLOAT,
     stop_lon FLOAT,
     trip_count INTEGER,
+    avg_daily_stop_events FLOAT,
     poi_count_within_400m INTEGER,
     food_poi_count_within_400m INTEGER,
     critical_service_poi_count_within_400m INTEGER,

@@ -12,12 +12,16 @@ from pyspark.sql.functions import (
     concat_ws,
     count,
     countDistinct,
+    dayofweek,
+    explode,
     lit,
     max as spark_max,
     mean as spark_mean,
     min as spark_min,
     round as spark_round,
+    sequence,
     sum as spark_sum,
+    to_date,
     when,
 )
 
@@ -29,15 +33,97 @@ from src.common.constants import (
     STOP_POI_ACCESS_DISTANCE_M,
     TRANSIT_ROAD_COVERAGE_DISTANCE_M,
 )
-from src.common.paths import analytics_dir, clean_gtfs_dir, clean_osm_dir
+from src.common.paths import analytics_dir, clean_gtfs_dir, clean_osm_dir, raw_gtfs_dir
 from src.common.run_metadata import StageTracker, generate_run_id
 from src.osm.transformers import haversine_distance
 
 
-def stop_activity(stop_times_df: DataFrame) -> DataFrame:
+def active_service_dates(spark: SparkSession, raw_dir: Path, city: str) -> DataFrame:
+    calendar_path = raw_dir / "calendar.txt"
+    calendar_dates_path = raw_dir / "calendar_dates.txt"
+
+    base_dates = None
+    if calendar_path.exists():
+        calendar_df = spark.read.csv(str(calendar_path), header=True, inferSchema=True)
+        expanded = calendar_df.select(
+            lit(city).alias("city"),
+            col("service_id").cast("string").alias("service_id"),
+            col("monday").cast("int").alias("monday"),
+            col("tuesday").cast("int").alias("tuesday"),
+            col("wednesday").cast("int").alias("wednesday"),
+            col("thursday").cast("int").alias("thursday"),
+            col("friday").cast("int").alias("friday"),
+            col("saturday").cast("int").alias("saturday"),
+            col("sunday").cast("int").alias("sunday"),
+            explode(
+                sequence(
+                    to_date(col("start_date").cast("string"), "yyyyMMdd"),
+                    to_date(col("end_date").cast("string"), "yyyyMMdd"),
+                )
+            ).alias("service_date"),
+        )
+        service_weekday = dayofweek(col("service_date"))
+        base_dates = expanded.filter(
+            ((service_weekday == 1) & (col("sunday") == 1))
+            | ((service_weekday == 2) & (col("monday") == 1))
+            | ((service_weekday == 3) & (col("tuesday") == 1))
+            | ((service_weekday == 4) & (col("wednesday") == 1))
+            | ((service_weekday == 5) & (col("thursday") == 1))
+            | ((service_weekday == 6) & (col("friday") == 1))
+            | ((service_weekday == 7) & (col("saturday") == 1))
+        ).select("city", "service_id", "service_date")
+
+    additions = None
+    removals = None
+    if calendar_dates_path.exists():
+        calendar_dates_df = spark.read.csv(str(calendar_dates_path), header=True, inferSchema=True).select(
+            lit(city).alias("city"),
+            col("service_id").cast("string").alias("service_id"),
+            to_date(col("date").cast("string"), "yyyyMMdd").alias("service_date"),
+            col("exception_type").cast("int").alias("exception_type"),
+        )
+        additions = calendar_dates_df.filter(col("exception_type") == 1).select("city", "service_id", "service_date")
+        removals = calendar_dates_df.filter(col("exception_type") == 2).select("city", "service_id", "service_date")
+
+    if base_dates is None and additions is None:
+        return spark.createDataFrame([], "city string, service_id string, service_date date")
+
+    active_dates = additions if base_dates is None else base_dates
+    if additions is not None and base_dates is not None:
+        active_dates = active_dates.unionByName(additions)
+    active_dates = active_dates.dropDuplicates(["city", "service_id", "service_date"])
+    if removals is not None:
+        active_dates = active_dates.join(removals, on=["city", "service_id", "service_date"], how="left_anti")
+    return active_dates
+
+
+def active_service_day_counts(active_dates_df: DataFrame) -> DataFrame:
+    return active_dates_df.groupBy("city", "service_id").agg(countDistinct("service_date").alias("active_service_days"))
+
+
+def total_feed_days(active_dates_df: DataFrame) -> int:
+    rows = active_dates_df.select("service_date").distinct().count()
+    return max(int(rows), 1)
+
+
+def stop_activity(
+    stop_times_df: DataFrame,
+    trips_df: DataFrame,
+    service_day_counts_df: DataFrame,
+    feed_day_count: int,
+) -> DataFrame:
+    joined_df = (
+        stop_times_df.alias("st")
+        .join(trips_df.select("city", "trip_id", "service_id").alias("t"), on=["city", "trip_id"], how="inner")
+        .join(service_day_counts_df.alias("sd"), on=["city", "service_id"], how="left")
+        .withColumn("active_service_days", when(col("active_service_days").isNull(), lit(1)).otherwise(col("active_service_days")))
+    )
     return (
-        stop_times_df.groupBy("city", "stop_id")
-        .agg(count("*").alias("trip_count"))
+        joined_df.groupBy("city", "stop_id")
+        .agg(
+            count("*").alias("trip_count"),
+            spark_round(spark_sum("active_service_days") / lit(feed_day_count), 2).alias("avg_daily_stop_events"),
+        )
         .orderBy(col("trip_count").desc())
     )
 
@@ -53,6 +139,7 @@ def stop_activity_enriched(stops_df: DataFrame, stop_activity_df: DataFrame) -> 
             col("s.stop_lat").alias("stop_lat"),
             col("s.stop_lon").alias("stop_lon"),
             col("a.trip_count").alias("trip_count"),
+            col("a.avg_daily_stop_events").alias("avg_daily_stop_events"),
             col("s.location_type").alias("location_type"),
             col("s.parent_station").alias("parent_station"),
         )
@@ -60,11 +147,19 @@ def stop_activity_enriched(stops_df: DataFrame, stop_activity_df: DataFrame) -> 
     )
 
 
-def route_activity(stop_times_df: DataFrame, trips_df: DataFrame, routes_df: DataFrame) -> DataFrame:
+def route_activity(
+    stop_times_df: DataFrame,
+    trips_df: DataFrame,
+    routes_df: DataFrame,
+    service_day_counts_df: DataFrame,
+    feed_day_count: int,
+) -> DataFrame:
     joined_df = (
         stop_times_df.alias("st")
         .join(trips_df.alias("t"), on=["city", "trip_id"], how="inner")
         .join(routes_df.alias("r"), on=["city", "route_id"], how="inner")
+        .join(service_day_counts_df.alias("sd"), on=["city", "service_id"], how="left")
+        .withColumn("active_service_days", when(col("active_service_days").isNull(), lit(1)).otherwise(col("active_service_days")))
     )
     return (
         joined_df.groupBy("city", "route_id", "route_short_name", "route_long_name", "route_type")
@@ -72,6 +167,7 @@ def route_activity(stop_times_df: DataFrame, trips_df: DataFrame, routes_df: Dat
             count("*").alias("stop_event_count"),
             countDistinct("trip_id").alias("distinct_trip_count"),
             countDistinct("stop_id").alias("distinct_stop_count"),
+            spark_round(spark_sum("active_service_days") / lit(feed_day_count), 2).alias("avg_daily_stop_events"),
         )
         .orderBy(col("stop_event_count").desc())
     )
@@ -82,12 +178,16 @@ def stop_activity_by_route(
     trips_df: DataFrame,
     routes_df: DataFrame,
     stops_df: DataFrame,
+    service_day_counts_df: DataFrame,
+    feed_day_count: int,
 ) -> DataFrame:
     joined_df = (
         stop_times_df.alias("st")
         .join(trips_df.alias("t"), on=["city", "trip_id"], how="inner")
         .join(routes_df.alias("r"), on=["city", "route_id"], how="inner")
         .join(stops_df.alias("s"), on=["city", "stop_id"], how="inner")
+        .join(service_day_counts_df.alias("sd"), on=["city", "service_id"], how="left")
+        .withColumn("active_service_days", when(col("active_service_days").isNull(), lit(1)).otherwise(col("active_service_days")))
     )
     return (
         joined_df.groupBy(
@@ -101,7 +201,10 @@ def stop_activity_by_route(
             "stop_lat",
             "stop_lon",
         )
-        .agg(count("*").alias("trip_count"))
+        .agg(
+            count("*").alias("trip_count"),
+            spark_round(spark_sum("active_service_days") / lit(feed_day_count), 2).alias("avg_daily_stop_events"),
+        )
         .orderBy(col("trip_count").desc())
     )
 
@@ -203,6 +306,7 @@ def busiest_stops_with_poi_context(
             col("sa.stop_lat").alias("stop_lat"),
             col("sa.stop_lon").alias("stop_lon"),
             col("sa.trip_count").alias("trip_count"),
+            col("sa.avg_daily_stop_events").alias("avg_daily_stop_events"),
             col("spa.poi_count_within_400m").alias("poi_count_within_400m"),
             col("spa.food_poi_count_within_400m").alias("food_poi_count_within_400m"),
             col("spa.critical_service_poi_count_within_400m").alias("critical_service_poi_count_within_400m"),
@@ -313,6 +417,7 @@ def main() -> None:
         analytics_dir(city, "transit_road_coverage"),
     ]
     input_dirs = [
+        raw_gtfs_dir(city),
         clean_gtfs_dir(city, "stops"),
         clean_gtfs_dir(city, "routes"),
         clean_gtfs_dir(city, "trips"),
@@ -345,11 +450,21 @@ def main() -> None:
         shapes_df = spark.read.parquet(str(clean_gtfs_dir(city, "shapes")))
         roads_df = spark.read.parquet(str(clean_osm_dir(city, "roads")))
         pois_df = spark.read.parquet(str(clean_osm_dir(city, "pois")))
+        active_dates_df = active_service_dates(spark, raw_gtfs_dir(city), city)
+        service_day_counts_df = active_service_day_counts(active_dates_df)
+        feed_day_count = total_feed_days(active_dates_df)
 
-        stop_activity_df = stop_activity(stop_times_df)
+        stop_activity_df = stop_activity(stop_times_df, trips_df, service_day_counts_df, feed_day_count)
         stop_activity_enriched_df = stop_activity_enriched(stops_df, stop_activity_df)
-        route_activity_df = route_activity(stop_times_df, trips_df, routes_df)
-        stop_activity_by_route_df = stop_activity_by_route(stop_times_df, trips_df, routes_df, stops_df)
+        route_activity_df = route_activity(stop_times_df, trips_df, routes_df, service_day_counts_df, feed_day_count)
+        stop_activity_by_route_df = stop_activity_by_route(
+            stop_times_df,
+            trips_df,
+            routes_df,
+            stops_df,
+            service_day_counts_df,
+            feed_day_count,
+        )
         route_shapes_df = route_shapes(trips_df, routes_df, shapes_df)
         stop_poi_access_df = stop_poi_access(stops_df, pois_df)
         busiest_stops_with_poi_context_df = busiest_stops_with_poi_context(
